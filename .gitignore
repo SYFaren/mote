@@ -1,0 +1,9 @@
+dist-release/
+**/build/
+*.o
+*~
+*.packed
+*.packed.exe
+.DS_Store
+*.swp
+*.swo

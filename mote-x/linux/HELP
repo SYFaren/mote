@@ -1,0 +1,61 @@
+mote-x — SYFaren
+================
+
+Help: F1 or Ctrl+H · Close: Esc
+CLI: mote-x [file ...] · -g WxH · config ~/.config/mote-x/config
+
+Files
+  Ctrl+S              Save
+  Ctrl+Shift+S        Save As
+  Ctrl+O              Open
+  F5                  Reload
+  Ctrl+E              Recent files
+  Ctrl+Q              Quit
+  Ctrl+N              New document
+  Ctrl+Shift+W        Close document
+  Ctrl+Tab            Next document
+  Ctrl+Shift+Tab      Previous document
+
+Edit
+  Ctrl+Z / Ctrl+Y     Undo / Redo
+  Ctrl+F              Find
+  F3                  Find next
+  Shift+F3            Find previous
+  Alt+C               Find: match case
+  Alt+W               Find: whole word
+  Ctrl+R              Replace all
+  Ctrl+G              Go to line
+  Ctrl+]              Matching bracket
+  Ctrl+T              Next theme
+  Ctrl+A              Select all
+  Ctrl+X / C / V      Cut / Copy / Paste
+  Tab                 Indent
+  Shift+Tab           Outdent
+  Ctrl+D              Duplicate line
+  Ctrl+Shift+K        Delete line
+  Enter               New line + indent
+  ( [ { " '           Autoclose
+
+View
+  Ctrl+W              Soft wrap
+  F7                  Show whitespace
+  Ctrl+ = / - / 0     Zoom in / out / reset
+  Ctrl+Shift+R        Readonly
+  Ctrl+Shift+E        EOL  LF / CRLF
+
+Move
+  Arrows Home End     Move caret
+  PgUp / PgDn         Page
+  Ctrl+Left / Right   Word jump
+  Shift + move        Extend selection
+  Mouse / Wheel       Select / scroll
+
+Also
+  Line numbers, current line, bracket highlight
+  Find match highlight, syntax by extension
+  Status: [doc]  line:col  lang  EOL
+
+Unsaved / dirty open
+  Ctrl+S              Save and continue
+  Ctrl+Q              Discard and continue
+  Esc                 Cancel
