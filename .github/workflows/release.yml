@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libx11-dev libsdl2-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev \
+            mingw-w64 upx-ucl zip
+      - name: Build release assets
+        run: make release-linux release-windows release-zip
+        env:
+          # wasm optional on CI (no emsdk by default)
+          PATH: ${{ env.PATH }}
+      - name: Checksums
+        run: |
+          test -f dist-release/SHA256SUMS || (cd dist-release/flat && sha256sum * > ../SHA256SUMS)
+          find dist-release -type f | sort
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mote-dist
+          path: |
+            dist-release/by-platform/**
+            dist-release/flat/**
+            dist-release/mote-all-platforms.zip
+            dist-release/SHA256SUMS
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-release/mote-all-platforms.zip
+            dist-release/SHA256SUMS
+            dist-release/flat/*
+          generate_release_notes: true

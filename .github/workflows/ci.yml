@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libx11-dev libsdl2-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev
+      - name: ANSI check
+        run: make ansi-check
+      - name: Tests
+        run: make test
+      - name: Linux overlays
+        run: |
+          make console x11 sdl wayland fbdev
+
+  windows-cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: MinGW
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - name: Windows GUI
+        run: make win32
+      - name: Windows console
+        run: make winconsole

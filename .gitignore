@@ -1,9 +1,22 @@
-dist-release/
+# build outputs
+build/
 **/build/
+dist-release/*
+!dist-release/.gitkeep
+
+# objects / editor junk
 *.o
+*.a
 *~
-*.packed
-*.packed.exe
-.DS_Store
 *.swp
 *.swo
+.DS_Store
+
+# packed copies (optional UPX artifacts under build/)
+*.packed
+*.packed.exe
+
+# toolchain packages / local scratch
+*.deb
+shots/
+demo-media/
