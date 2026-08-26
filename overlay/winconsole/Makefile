@@ -1,6 +1,6 @@
 # mote — Windows console overlay (MinGW, -mconsole)
 WINCC ?= x86_64-w64-mingw32-gcc
-UPX ?= $(HOME)/.local/opt/upx/upx
+UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..
 include ../build.mk
 
@@ -24,9 +24,9 @@ build/mote.exe: $(SRC) $(ROOT)/plat/platform.h | build
 	$(WINCC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 pack: build/mote.exe
-	@command -v $(UPX) >/dev/null 2>&1 || { echo "UPX missing: $(UPX)"; exit 1; }
+	@command -v $(UPX_BIN) >/dev/null 2>&1 || { echo "UPX missing: $(UPX_BIN)"; exit 1; }
 	cp -f build/mote.exe build/mote.packed.exe
-	$(UPX) --best --lzma -f build/mote.packed.exe
+	env -u UPX $(UPX_BIN) --best --lzma -f build/mote.packed.exe
 	ls -la build/mote.exe build/mote.packed.exe
 
 build:

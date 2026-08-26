@@ -1,6 +1,6 @@
 # mote — SDL2 overlay (SDL3: make MOTE_SDL3=1)
 CC ?= gcc
-UPX ?= $(HOME)/.local/opt/upx/upx
+UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..
 include ../build.mk
 
@@ -30,9 +30,9 @@ build/mote: $(SRC) $(ROOT)/plat/platform.h ../soft/soft.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 pack: build/mote
-	@command -v $(UPX) >/dev/null 2>&1 || { echo "UPX missing"; exit 1; }
+	@command -v $(UPX_BIN) >/dev/null 2>&1 || { echo "UPX missing"; exit 1; }
 	cp -f build/mote build/mote.packed
-	$(UPX) --best --lzma -f build/mote.packed
+	env -u UPX $(UPX_BIN) --best --lzma -f build/mote.packed
 	ls -la build/mote build/mote.packed
 
 run: build/mote

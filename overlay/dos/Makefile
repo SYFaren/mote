@@ -5,7 +5,7 @@
 # Then: make -C overlay/dos
 #
 DOSCC ?= i586-pc-msdosdjgpp-gcc
-UPX ?= $(HOME)/.local/opt/upx/upx
+UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..
 
 CORE = $(ROOT)/core/buffer.c $(ROOT)/core/utf8.c $(ROOT)/core/undo.c \
@@ -38,9 +38,9 @@ build/mote.exe: $(SRC) $(ROOT)/plat/platform.h | build
 	@ls -la $@
 
 pack: build/mote.exe
-	@command -v $(UPX) >/dev/null 2>&1 || { echo "UPX missing"; exit 1; }
+	@command -v $(UPX_BIN) >/dev/null 2>&1 || { echo "UPX missing"; exit 1; }
 	cp -f build/mote.exe build/mote.packed.exe
-	$(UPX) --best --lzma -f build/mote.packed.exe
+	env -u UPX $(UPX_BIN) --best --lzma -f build/mote.packed.exe
 	ls -la build/mote.exe build/mote.packed.exe
 
 build:

@@ -10,7 +10,7 @@ SITE_DIR="${SITE_DIR:-$HOME/Projects/mote-site}"
 OWNER="${OWNER:-SYFaren}"
 MOTE_REPO="${MOTE_REPO:-mote}"
 SITE_REPO="${SITE_REPO:-mote-site}"
-TAG="${TAG:-v0.4.0}"
+TAG="${TAG:-v2.0.0}"
 RELEASE_TITLE="${RELEASE_TITLE:-$TAG}"
 
 die() { echo "error: $*" >&2; exit 1; }

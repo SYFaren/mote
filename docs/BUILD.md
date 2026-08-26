@@ -43,4 +43,9 @@ dist-release/
 
 Screenshots (optional): `sh scripts/shots.sh` → writes into `mote-site/gallery/plat-*.png`.
 
-Publish: `sh publish-github.sh` after `make release`.
+Packed variants (`*.upx`) need the UPX binary. Makefiles use `UPX_BIN`
+(default `~/.local/opt/upx/upx`) and run it with `env -u UPX` so a stray
+`UPX=…` shell variable (UPX’s own options channel) cannot break packing.
+
+Publish: `sh publish-github.sh` after `make release`
+(optional: `TAG=v2.0.0 sh publish-github.sh`; default tag is `v2.0.0`).
