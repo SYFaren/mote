@@ -178,8 +178,10 @@ static mote_bool sync_em_canvas(Plat *p) {
   h = (int)css_h;
   if (w < 200) w = 200;
   if (h < 120) h = 120;
-  emscripten_set_canvas_element_size("#canvas", w, h);
+  /* Do not touch the canvas / window when size is unchanged — calling
+   * set_canvas_element_size every poll clears the bitmap and flickers. */
   if (w == p->fb.w && h == p->fb.h) return MOTE_FALSE;
+  emscripten_set_canvas_element_size("#canvas", w, h);
   soft_resize(&p->fb, w, h);
   ensure_tex(p);
   SDL_SetWindowSize(p->win, w, h);
@@ -210,7 +212,12 @@ Plat *plat_create(const char *title, int w, int h) {
   p->win = SDL_CreateWindow(title ? title : "mote", SDL_WINDOWPOS_CENTERED,
                             SDL_WINDOWPOS_CENTERED, w, h, SDL_WINDOW_RESIZABLE);
   if (!p->win) { SDL_Quit(); free(p); return NULL; }
-  p->ren = SDL_CreateRenderer(p->win, -1, SDL_RENDERER_SOFTWARE);
+  /* Prefer accelerated+vsync. SOFTWARE first was used historically and made
+   * the Emscripten build crawl / flicker. */
+  p->ren = SDL_CreateRenderer(p->win, -1,
+                              SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+  if (!p->ren)
+    p->ren = SDL_CreateRenderer(p->win, -1, SDL_RENDERER_PRESENTVSYNC);
   if (!p->ren) p->ren = SDL_CreateRenderer(p->win, -1, 0);
   if (!p->ren) {
     SDL_DestroyWindow(p->win);
@@ -349,6 +356,14 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
       return MOTE_TRUE;
     }
     if (se.type == SDL_WINDOWEVENT) {
+#ifdef __EMSCRIPTEN__
+      /* Size is owned by sync_em_canvas (CSS box). Ignoring SDL resize
+       * events avoids a SetWindowSize ↔ SIZE_CHANGED feedback loop. */
+      if (se.window.event == SDL_WINDOWEVENT_EXPOSED) {
+        ev->type = PE_EXPOSE;
+        return MOTE_TRUE;
+      }
+#else
       if (se.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
         soft_resize(&p->fb, se.window.data1, se.window.data2);
 #ifdef MOTE_SDL_RENDERER
@@ -362,6 +377,7 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
         ev->type = PE_EXPOSE;
         return MOTE_TRUE;
       }
+#endif
     }
     if (se.type == SDL_KEYDOWN) {
       map_key(p, &se.key);
@@ -428,23 +444,21 @@ void plat_end_frame(Plat *p) {
   if (!p->fb.px) return;
 #ifdef MOTE_SDL_RENDERER
   {
-    void *pixels;
-    int pitch;
     if (!p->tex) return;
-    if (SDL_LockTexture(p->tex, NULL, &pixels, &pitch) == 0) {
-      int y, x;
-      for (y = 0; y < p->fb.h; y++) {
-        mote_u32 *src = p->fb.px + (size_t)y * (size_t)p->fb.w;
-        unsigned char *row = (unsigned char *)pixels + y * pitch;
-        for (x = 0; x < p->fb.w; x++) {
-          mote_u32 c = src[x] | 0xFF000000u;
-          memcpy(row + x * 4, &c, 4);
+    /* Contiguous soft FB → one UpdateTexture (per-pixel lock was a bottleneck). */
+    if (SDL_UpdateTexture(p->tex, NULL, p->fb.px, p->fb.w * (int)sizeof(mote_u32)) != 0) {
+      void *pixels;
+      int pitch;
+      if (SDL_LockTexture(p->tex, NULL, &pixels, &pitch) == 0) {
+        int y;
+        for (y = 0; y < p->fb.h; y++) {
+          mote_u32 *src = p->fb.px + (size_t)y * (size_t)p->fb.w;
+          unsigned char *row = (unsigned char *)pixels + y * pitch;
+          memcpy(row, src, (size_t)p->fb.w * sizeof(mote_u32));
         }
+        SDL_UnlockTexture(p->tex);
       }
-      SDL_UnlockTexture(p->tex);
     }
-    SDL_SetRenderDrawColor(p->ren, 0, 0, 0, 255);
-    SDL_RenderClear(p->ren);
 #if defined(MOTE_SDL3)
     SDL_RenderTexture(p->ren, p->tex, NULL, NULL);
 #else
