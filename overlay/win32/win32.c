@@ -54,6 +54,13 @@ static void map_vk(WPARAM vk, mote_bool ctrl, mote_bool shift, mote_bool alt, Pl
   if (alt && !ctrl) {
     if (vk == 'C') { ev->key = PK_FINDCASE; return; }
     if (vk == 'W') { ev->key = PK_FINDWORD; return; }
+    if (vk == 'S') { ev->key = PK_SAVEAS; return; }
+    if (vk == 'R') { ev->key = PK_READONLY; return; }
+    if (vk == 'K') { ev->key = PK_DELLINE; return; }
+    if (vk == 'E') { ev->key = PK_EOL; return; }
+    if (vk == 'H') { ev->key = PK_HELP; return; }
+    if (vk == 'N') { ev->key = PK_NEXTDOC; return; }
+    if (vk == 'P') { ev->key = PK_PREVDOC; return; }
   }
   if (ctrl) {
     switch (vk) {

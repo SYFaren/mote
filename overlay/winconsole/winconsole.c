@@ -230,8 +230,28 @@ static void ingest_key_event(Plat *p, KEY_EVENT_RECORD *ke) {
   vk = ke->wVirtualKeyCode;
   ch = ke->uChar.UnicodeChar;
 
-  if (alt && !ctrl && (vk == 'H' || vk == 'h')) {
-    key_flush(p, PK_HELP, MOTE_FALSE, MOTE_FALSE);
+  if (alt && !ctrl) {
+    PlatKey ak = PK_NONE;
+    if (vk == 'H' || vk == 'h') ak = PK_HELP;
+    else if (vk == 'C' || vk == 'c') ak = PK_FINDCASE;
+    else if (vk == 'W' || vk == 'w') ak = PK_FINDWORD;
+    else if (vk == 'S' || vk == 's') ak = PK_SAVEAS;
+    else if (vk == 'R' || vk == 'r') ak = PK_READONLY;
+    else if (vk == 'K' || vk == 'k') ak = PK_DELLINE;
+    else if (vk == 'E' || vk == 'e') ak = PK_EOL;
+    else if (vk == 'N' || vk == 'n') ak = PK_NEXTDOC;
+    else if (vk == 'P' || vk == 'p') ak = PK_PREVDOC;
+    if (ak != PK_NONE) {
+      key_flush(p, ak, MOTE_FALSE, MOTE_FALSE);
+      return;
+    }
+  }
+  if (ctrl && vk == VK_TAB) {
+    key_flush(p, shift ? PK_PREVDOC : PK_NEXTDOC, MOTE_TRUE, shift);
+    return;
+  }
+  if (ctrl && vk == VK_F4) {
+    key_flush(p, PK_CLOSEDOC, MOTE_TRUE, MOTE_FALSE);
     return;
   }
   if (ctrl) {
@@ -254,6 +274,7 @@ static void ingest_key_event(Plat *p, KEY_EVENT_RECORD *ke) {
   case VK_ESCAPE: key_flush(p, PK_ESCAPE, MOTE_FALSE, MOTE_FALSE); return;
   case VK_TAB: key_flush(p, PK_TAB, MOTE_FALSE, shift); return;
   case VK_F1: key_flush(p, PK_HELP, MOTE_FALSE, MOTE_FALSE); return;
+  case VK_F2: key_flush(p, shift ? PK_PREVDOC : PK_NEXTDOC, MOTE_FALSE, shift); return;
   case VK_F3: key_flush(p, shift ? PK_FINDPREV : PK_FINDNEXT, MOTE_FALSE, shift); return;
   case VK_F5: key_flush(p, PK_RELOAD, MOTE_FALSE, MOTE_FALSE); return;
   case VK_F7: key_flush(p, PK_WS, MOTE_FALSE, MOTE_FALSE); return;

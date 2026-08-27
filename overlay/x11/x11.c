@@ -475,6 +475,13 @@ static void map_key(KeySym ks, unsigned state, PlatEvent *ev) {
   if (alt && !ctrl) {
     if (lower == XK_c) { ev->key = PK_FINDCASE; return; }
     if (lower == XK_w) { ev->key = PK_FINDWORD; return; }
+    if (lower == XK_s) { ev->key = PK_SAVEAS; return; }
+    if (lower == XK_r) { ev->key = PK_READONLY; return; }
+    if (lower == XK_k) { ev->key = PK_DELLINE; return; }
+    if (lower == XK_e) { ev->key = PK_EOL; return; }
+    if (lower == XK_h) { ev->key = PK_HELP; return; }
+    if (lower == XK_n) { ev->key = PK_NEXTDOC; return; }
+    if (lower == XK_p) { ev->key = PK_PREVDOC; return; }
   }
   if (ctrl) {
     switch (lower) {

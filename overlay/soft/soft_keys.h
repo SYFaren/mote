@@ -8,8 +8,16 @@ static PlatKey soft_ctrl_letter(int ch, mote_bool shift, mote_bool alt) {
   int c = ch;
   if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
   if (alt && !shift) {
+    /* Also used where Ctrl+Shift cannot be detected (DOS/TTY). */
     if (c == 'C') return PK_FINDCASE;
     if (c == 'W') return PK_FINDWORD;
+    if (c == 'S') return PK_SAVEAS;
+    if (c == 'R') return PK_READONLY;
+    if (c == 'K') return PK_DELLINE;
+    if (c == 'E') return PK_EOL;
+    if (c == 'H') return PK_HELP;
+    if (c == 'N') return PK_NEXTDOC;
+    if (c == 'P') return PK_PREVDOC;
     return PK_NONE;
   }
   switch (c) {

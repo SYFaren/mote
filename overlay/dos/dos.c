@@ -2,6 +2,7 @@
 #include "platform.h"
 #include "utf8.h"
 
+#include <bios.h>
 #include <dpmi.h>
 #include <go32.h>
 #include <pc.h>
@@ -42,11 +43,11 @@ static const mote_u32 VGA16[16] = {
     0x4EC9B0ul, /* 3  type cyan */
     0xCE9178ul, /* 4  string warm */
     0xC586C0ul, /* 5  keyword purple */
-    0xD7BA7Dul, /* 6  soft yellow */
-    0xD4D4D4ul, /* 7  fg */
+    0xD7BA7Dul, /* 6  soft yellow / amber */
+    0xF5F5F5ul, /* 7  light paper + dark-theme fg */
     0x5C6773ul, /* 8  gutter */
     0x569CD6ul, /* 9  keyword blue */
-    0xB5CEA8ul, /* 10 number green */
+    0xD7BA7Dul, /* 10 number amber */
     0x39BAE6ul, /* 11 bright cyan */
     0xF44747ul, /* 12 bright red */
     0xD4BFFFul, /* 13 bright magenta */
@@ -63,6 +64,16 @@ static void vga_set_dac(unsigned idx, mote_u32 rgb) {
 
 static void vga_load_palette(void) {
   unsigned i;
+  /* Mode 03h Attribute Controller maps attr N → random DAC slots in the
+   * first 64 (e.g. bright green attr 10 → DAC 0x12). Force identity so
+   * attr N uses DAC N, then program DAC 0..15 to our theme colors. */
+  (void)inportb(0x3DA); /* reset AC address flip-flop */
+  for (i = 0; i < 16; i++) {
+    outportb(0x3C0, (unsigned char)i);
+    outportb(0x3C0, (unsigned char)i);
+  }
+  (void)inportb(0x3DA);
+  outportb(0x3C0, 0x20); /* PAS: enable display */
   for (i = 0; i < 16; i++) vga_set_dac(i, VGA16[i]);
 }
 
@@ -108,16 +119,16 @@ static unsigned char nearest_vga(mote_u32 rgb) {
     return 8; /* gutter / panel — only when not pure bg */
   if (r > 200 && g > 200 && b > 200) return 15;       /* white */
   if (r > 180 && g > 180 && b > 180) return 7;        /* fg */
-  if (g > r + 20 && g > b + 10 && g > 100 && r < 160) {
-    if (bri > 400) return 10; /* number */
-    return 2;                 /* comment */
-  }
-  if (b > r + 30 && b > g && r < 120) return 1;       /* status blue */
-  if (b > 160 && g > 140 && r < 120) return 3;        /* type cyan */
-  if (b > 170 && r < 120 && g > 120 && g < 200) return 9; /* keyword blue */
+  /* Teal/cyan before olive — type 4EC9B0 used to collapse into comment. */
+  if (g > 140 && b > 140 && r < 130 && b + 40 >= g) return 3; /* type cyan */
+  if (b > 170 && r < 130 && g > 100 && g < 210) return 9;     /* keyword blue */
+  if (b > r + 30 && b > g && r < 120) return 1;               /* status blue */
+  if (g > r + 20 && g > b + 20 && g > 100 && r < 160 && b < 130)
+    return 2; /* comment olive */
   if (r > 160 && g > 100 && g < 180 && b < 140) return 4; /* string */
   if (r > 150 && b > 150 && g < 160) return 5;        /* keyword purple */
-  if (r > 180 && g > 140 && b < 100) return 6;        /* number/gold-ish */
+  if (r > 180 && g > 140 && b < 160 && b < g) return 10; /* number amber */
+  if (r > 150 && g > 60 && g < 120 && b < 50) return 14; /* light-theme number brown */
   if (r > 200 && g < 100) return 12;                  /* red */
   if (r > 200 && g > 100 && b < 100) return 14;       /* orange */
   for (i = 0; i < 16; i++) {
@@ -241,6 +252,13 @@ static void key_flush(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
   key(p, k, ctrl, shift);
 }
 
+/* BIOS shift flags (0040:0017): bit0/1 = Shift, bit2 = Ctrl, bit3 = Alt. */
+static unsigned bios_shifts(void) {
+  return (unsigned)bioskey(_KEYBRD_SHIFTSTATUS);
+}
+static mote_bool shift_down(void) { return (bios_shifts() & 0x03u) != 0; }
+static mote_bool ctrl_down(void) { return (bios_shifts() & 0x04u) != 0; }
+
 static void ctrl_key(Plat *p, int c, mote_bool shift) {
   char lo = (char)c;
   PlatKey k = PK_NONE;
@@ -266,19 +284,32 @@ static void ctrl_key(Plat *p, int c, mote_bool shift) {
   case 'k':
     if (shift) k = PK_DELLINE;
     break;
-  case '=':
-  case '+': k = PK_ZOOMIN; break;
-  case '-':
-  case '_': k = PK_ZOOMOUT; break;
-  case '0': k = PK_ZOOMRESET; break;
-  case ']': k = PK_BRACKET; break;
   default: break;
   }
   if (k != PK_NONE) key_flush(p, k, MOTE_TRUE, shift);
 }
 
+static void alt_letter(Plat *p, int c) {
+  /* Mirrors soft_keys.h Alt bindings (reliable when Ctrl+Shift is awkward). */
+  PlatKey k = PK_NONE;
+  if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
+  switch (c) {
+  case 'C': k = PK_FINDCASE; break;
+  case 'W': k = PK_FINDWORD; break;
+  case 'S': k = PK_SAVEAS; break;
+  case 'R': k = PK_READONLY; break;
+  case 'K': k = PK_DELLINE; break;
+  case 'E': k = PK_EOL; break;
+  case 'H': k = PK_HELP; break;
+  case 'N': k = PK_NEXTDOC; break;
+  case 'P': k = PK_PREVDOC; break;
+  default: break;
+  }
+  if (k != PK_NONE) key_flush(p, k, MOTE_FALSE, MOTE_FALSE);
+}
+
 static void ingest_key(Plat *p, int k) {
-  /* DJGPP getkey(): 8=BS, 9=Tab, 13=Enter, 27=Esc must beat Ctrl+A..Z
+  /* DJGPP getkey(): 8=BS, 9=Tab/Ctrl+I, 13=Enter, 27=Esc must beat Ctrl+A..Z
    * (ASCII 1..26), because BS is also Ctrl+H (=8). */
   if (k == 8 || k == 127 || k == K_BackSpace || k == K_Control_Backspace) {
     key_trace(k, "backspace");
@@ -286,19 +317,38 @@ static void ingest_key(Plat *p, int k) {
     return;
   }
   if (k == 9) {
-    key_flush(p, PK_TAB, MOTE_FALSE, MOTE_FALSE);
+    /* Tab / Ctrl+I / Ctrl+Tab share code 9 — use BIOS ctrl/shift. */
+    if (ctrl_down()) {
+      key_flush(p, shift_down() ? PK_PREVDOC : PK_NEXTDOC, MOTE_TRUE,
+                shift_down());
+    } else {
+      key_flush(p, PK_TAB, MOTE_FALSE, MOTE_FALSE);
+    }
     return;
   }
   if (k == 13) {
     key_flush(p, PK_ENTER, MOTE_FALSE, MOTE_FALSE);
     return;
   }
-  if (k == 27) {
+  if (k == 27 || k == K_Escape) {
     key_flush(p, PK_ESCAPE, MOTE_FALSE, MOTE_FALSE);
     return;
   }
+  /* Ctrl+] / Ctrl+_ (zoom-) — outside 1..26 letter range. */
+  if (k == K_Control_RBracket) {
+    key_flush(p, PK_BRACKET, MOTE_TRUE, MOTE_FALSE);
+    return;
+  }
+  if (k == K_Control_Underscore) {
+    key_flush(p, PK_ZOOMOUT, MOTE_TRUE, MOTE_FALSE);
+    return;
+  }
+  if (k == K_Control_Caret) {
+    key_flush(p, PK_ZOOMIN, MOTE_TRUE, MOTE_FALSE);
+    return;
+  }
   if (k >= 1 && k <= 26) {
-    ctrl_key(p, 'a' + k - 1, MOTE_FALSE);
+    ctrl_key(p, 'a' + k - 1, shift_down());
     return;
   }
   if (k >= 32 && k < 127) {
@@ -318,15 +368,30 @@ static void ingest_key(Plat *p, int k) {
   case K_PageUp: key_flush(p, PK_PGUP, MOTE_FALSE, MOTE_FALSE); break;
   case K_PageDown: key_flush(p, PK_PGDN, MOTE_FALSE, MOTE_FALSE); break;
   case K_Delete: key_flush(p, PK_DELETE, MOTE_FALSE, MOTE_FALSE); break;
+  case K_BackTab: key_flush(p, PK_TAB, MOTE_FALSE, MOTE_TRUE); break;
   case K_F1: key_flush(p, PK_HELP, MOTE_FALSE, MOTE_FALSE); break;
+  case K_F2: key_flush(p, PK_NEXTDOC, MOTE_FALSE, MOTE_FALSE); break;
+  case K_Shift_F2: key_flush(p, PK_PREVDOC, MOTE_FALSE, MOTE_TRUE); break;
   case K_F3: key_flush(p, PK_FINDNEXT, MOTE_FALSE, MOTE_FALSE); break;
+  case K_Shift_F3: key_flush(p, PK_FINDPREV, MOTE_FALSE, MOTE_TRUE); break;
   case K_F5: key_flush(p, PK_RELOAD, MOTE_FALSE, MOTE_FALSE); break;
   case K_F7: key_flush(p, PK_WS, MOTE_FALSE, MOTE_FALSE); break;
+  case K_Control_F4:
+  case K_Alt_F4: key_flush(p, PK_CLOSEDOC, MOTE_TRUE, MOTE_FALSE); break;
   case K_Control_Left: key_flush(p, PK_LEFT, MOTE_TRUE, MOTE_FALSE); break;
   case K_Control_Right: key_flush(p, PK_RIGHT, MOTE_TRUE, MOTE_FALSE); break;
   case K_Control_Home: key_flush(p, PK_HOME, MOTE_TRUE, MOTE_FALSE); break;
   case K_Control_End: key_flush(p, PK_END, MOTE_TRUE, MOTE_FALSE); break;
-  case K_Alt_H: key_flush(p, PK_HELP, MOTE_FALSE, MOTE_FALSE); break;
+  case K_Alt_Equals: key_flush(p, PK_ZOOMIN, MOTE_FALSE, MOTE_FALSE); break;
+  case K_Alt_H: alt_letter(p, 'H'); break;
+  case K_Alt_C: alt_letter(p, 'C'); break;
+  case K_Alt_W: alt_letter(p, 'W'); break;
+  case K_Alt_S: alt_letter(p, 'S'); break;
+  case K_Alt_R: alt_letter(p, 'R'); break;
+  case K_Alt_K: alt_letter(p, 'K'); break;
+  case K_Alt_E: alt_letter(p, 'E'); break;
+  case K_Alt_N: alt_letter(p, 'N'); break;
+  case K_Alt_P: alt_letter(p, 'P'); break;
   default:
     break;
   }

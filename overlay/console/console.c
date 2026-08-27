@@ -170,11 +170,24 @@ static int finish_esc(Plat *p) {
   }
 
   if (b[1] != '[') {
-    /* ESC + char → Alt+char; Alt+H = help */
+    /* ESC + char → Alt+char (TTY Alt bindings; see soft_keys.h). */
     p->in_n = 0;
     if (n == 2) {
-      if (b[1] == 'h' || b[1] == 'H') key_flush(p, PK_HELP, MOTE_FALSE, MOTE_FALSE);
-      else text_add(p, &b[1], 1);
+      char ch = b[1];
+      char up = ch;
+      PlatKey ak = PK_NONE;
+      if (up >= 'a' && up <= 'z') up = (char)(up - 'a' + 'A');
+      if (up == 'H') ak = PK_HELP;
+      else if (up == 'C') ak = PK_FINDCASE;
+      else if (up == 'W') ak = PK_FINDWORD;
+      else if (up == 'S') ak = PK_SAVEAS;
+      else if (up == 'R') ak = PK_READONLY;
+      else if (up == 'K') ak = PK_DELLINE;
+      else if (up == 'E') ak = PK_EOL;
+      else if (up == 'N') ak = PK_NEXTDOC;
+      else if (up == 'P') ak = PK_PREVDOC;
+      if (ak != PK_NONE) key_flush(p, ak, MOTE_FALSE, MOTE_FALSE);
+      else text_add(p, &ch, 1);
     }
     return 1;
   }
@@ -207,6 +220,29 @@ static int finish_esc(Plat *p) {
     code = 0;
     for (j = 2; j < n - 1 && b[j] >= '0' && b[j] <= '9'; j++)
       code = code * 10 + (b[j] - '0');
+    /* xterm: CSI 27 ; mod ; key ~  (Ctrl/Shift+Tab) */
+    if (code == 27) {
+      int parts[3] = {0, 0, 0}, pi = 0, v = 0;
+      for (j = 2; j < n - 1; j++) {
+        if (b[j] == ';') {
+          if (pi < 3) parts[pi++] = v;
+          v = 0;
+        } else if (b[j] >= '0' && b[j] <= '9')
+          v = v * 10 + (b[j] - '0');
+      }
+      if (pi < 3) parts[pi++] = v;
+      if (parts[0] == 27 && parts[2] == 9) {
+        int m = parts[1];
+        mote_bool sh = (m == 2 || m == 4 || m == 6 || m == 8);
+        mote_bool ct = (m == 5 || m == 6 || m == 7 || m == 8);
+        if (ct)
+          key_flush(p, sh ? PK_PREVDOC : PK_NEXTDOC, MOTE_TRUE, sh);
+        else
+          key_flush(p, PK_TAB, MOTE_FALSE, sh);
+        p->in_n = 0;
+        return 1;
+      }
+    }
     if (code == 200) { /* bracketed paste start */
       p->paste = MOTE_TRUE;
       p->in_n = 0;

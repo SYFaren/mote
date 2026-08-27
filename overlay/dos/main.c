@@ -15,7 +15,13 @@ static void die(const char *msg) {
 
 static void usage(void) {
   die("usage: mote [-h|-v|-H|-g COLSxROWS] [file ...]");
+  die("  -h, --help         show this help");
+  die("  -v, --version      print version");
+  die("  -H, --start-help   open help overlay on start");
+  die("  -g, --geometry     text size COLSxROWS (40..132 x 10..50)");
+  die("  file ...           open up to 6 files");
   die("DOS VGA text; Ctrl+Q quit, F1 help; config MOTE\\CONFIG");
+  die("env: MOTE_START_HELP=1  MOTE_KEYTRACE=1 (writes KEYTRACE.LOG)");
 }
 
 static int parse_int(const char *s, int *out) {
