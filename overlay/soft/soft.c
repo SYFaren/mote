@@ -128,6 +128,10 @@ void soft_draw_text(SoftFb *fb, int x, int y, const char *s, int n, mote_u32 rgb
       cp = (mote_u32)' ';
     else if (cp == 0x2026)
       cp = (mote_u32)'.';
+    else if (cp == 0x00B7 || cp == 0x2022 || cp == 0x2219)
+      cp = (mote_u32)'.'; /* · • ∙ — whitespace markers */
+    else if (cp == 0x00BB || cp == 0x203A)
+      cp = (mote_u32)'>'; /* » › — tab markers */
     put_glyph(fb, cx, y, cp, rgb);
     cx += adv;
   }
