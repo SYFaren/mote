@@ -120,21 +120,25 @@ shot_win plat-linux-x11.png '
   export WID APP_PID
 '
 
-# --- Console (xterm) — capture full xterm window so status row is kept ---
-shot_win plat-linux-console.png '
-  xterm -geometry 110x36 -fa "DejaVu Sans Mono" -fs 12 \
-    -bg "#1e1e1e" -fg "#d4d4d4" -T mote-con-shot \
-    -e ./overlay/console/build/mote "'"$DEMO"'" &
-  APP_PID=$!
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    WID=$(xdotool search --name mote-con-shot 2>/dev/null | tail -1)
-    [ -n "$WID" ] && break
-    WID=$(xdotool search --class xterm 2>/dev/null | tail -1)
-    [ -n "$WID" ] && break
-    sleep 0.25
-  done
-  export WID APP_PID
-'
+# --- Console — cell dump (guarantees last-row status bar in the shot) ---
+if [ -x overlay/console/build/mote ]; then
+  cells="$TMP/console.cells"
+  raw="$TMP/console.png"
+  rm -f "$cells" "$raw"
+  # script gives a TTY; geometry via -g
+  if need script; then
+    script -q -c "env MOTE_DUMP_CELLS='$cells' MOTE_SHOT_ONCE=1 \
+      ./overlay/console/build/mote -g 100x32 '$DEMO'" /dev/null >/dev/null 2>&1 || true
+  else
+    MOTE_DUMP_CELLS="$cells" MOTE_SHOT_ONCE=1 \
+      ./overlay/console/build/mote -g 100x32 "$DEMO" >/dev/null 2>&1 || true
+  fi
+  if [ -s "$cells" ] && python3 "$ROOT/scripts/render_cells.py" "$cells" "$raw"; then
+    frame "$raw" "$GAL/plat-linux-console.png"
+  else
+    echo "  skip plat-linux-console.png (cell dump failed)"
+  fi
+fi
 
 # --- Windows GUI (Wine) ---
 if need wine && [ -x overlay/win32/build/mote.exe ]; then

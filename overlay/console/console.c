@@ -510,6 +510,39 @@ void plat_draw_text(Plat *p, int x, int y, const char *s, int n, mote_u32 rgb) {
 void plat_end_frame(Plat *p) {
   int y, x;
   mote_u32 lfg = 0xffffffffu, lbg = 0xffffffffu;
+
+  /* Gallery / debug: dump cell grid (incl. last-row status). */
+  {
+    const char *path = getenv("MOTE_DUMP_CELLS");
+    static int dumped;
+    if (path && path[0] && p->cells && !dumped) {
+      FILE *f = fopen(path, "wb");
+      int i, n = p->cols * p->rows;
+      dumped = 1;
+      if (f) {
+        fprintf(f, "MOTECELL %d %d\n", p->cols, p->rows);
+        for (i = 0; i < n; i++) {
+          Cell *c = &p->cells[i];
+          unsigned char b[10];
+          mote_u32 cp = c->cp ? c->cp : (mote_u32)' ';
+          b[0] = (unsigned char)(cp & 255);
+          b[1] = (unsigned char)((cp >> 8) & 255);
+          b[2] = (unsigned char)((cp >> 16) & 255);
+          b[3] = (unsigned char)((cp >> 24) & 255);
+          b[4] = (unsigned char)((c->fg >> 16) & 255);
+          b[5] = (unsigned char)((c->fg >> 8) & 255);
+          b[6] = (unsigned char)(c->fg & 255);
+          b[7] = (unsigned char)((c->bg >> 16) & 255);
+          b[8] = (unsigned char)((c->bg >> 8) & 255);
+          b[9] = (unsigned char)(c->bg & 255);
+          fwrite(b, 1, 10, f);
+        }
+        fclose(f);
+      }
+      if (getenv("MOTE_SHOT_ONCE")) _exit(0);
+    }
+  }
+
   /* Hide cursor; paint full grid with truecolor (status = last row). */
   fputs("\033[?25l\033[H", stdout);
   for (y = 0; y < p->rows; y++) {

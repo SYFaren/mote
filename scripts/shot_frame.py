@@ -94,7 +94,9 @@ def frame(src: Path, dst: Path, nearest: bool = False) -> None:
     x0 = max(0, x0 - 6)
     y0 = max(0, y0 - 6)
     x1 = min(im.size[0], x1 + 6)
-    y1 = min(im.size[1], y1 + 6)
+    # Extra bottom pad so status strip never sits flush against the frame edge.
+    y1 = min(im.size[1], y1 + 12)
+
     crop = im.crop((x0, y0, x1, y1))
     cw, ch = crop.size
     if cw < 8 or ch < 8:

@@ -76,27 +76,19 @@ xvfb-run -a -s "-screen 0 1280x900x24" sh -c "
 " || true
 [ -f "$TMP/x11.png" ] && frame "$TMP/x11.png" "$HELP/help-linux-x11.png"
 
-# Console
-rm -f "$TMP/con.png"
-xvfb-run -a -s "-screen 0 1280x900x24" sh -c "
-  MOTE_START_HELP=1 xterm -geometry 110x36 -fa 'DejaVu Sans Mono' -fs 12 \
-    -bg '#1e1e1e' -fg '#d4d4d4' -T mote-help-con \
-    -e ./overlay/console/build/mote '$DEMO' &
-  pid=\$!
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    wid=\$(xdotool search --name mote-help-con 2>/dev/null | tail -1)
-    [ -n \"\$wid\" ] && break
-    sleep 0.25
-  done
-  sleep 1.0
-  if [ -n \"\$wid\" ]; then
-    import -window \"\$wid\" '$TMP/con.png'
-  else
-    scrot -z '$TMP/con.png'
-  fi
-  kill \$pid 2>/dev/null; wait \$pid 2>/dev/null || true
-" || true
-[ -f "$TMP/con.png" ] && frame "$TMP/con.png" "$HELP/help-linux-console.png"
+# Console — cell dump (status row included)
+rm -f "$TMP/con.cells" "$TMP/con.png"
+if command -v script >/dev/null 2>&1; then
+  script -q -c "env MOTE_DUMP_CELLS='$TMP/con.cells' MOTE_SHOT_ONCE=1 MOTE_START_HELP=1 \
+    ./overlay/console/build/mote -g 100x32 '$DEMO'" /dev/null >/dev/null 2>&1 || true
+else
+  MOTE_DUMP_CELLS="$TMP/con.cells" MOTE_SHOT_ONCE=1 MOTE_START_HELP=1 \
+    ./overlay/console/build/mote -g 100x32 "$DEMO" >/dev/null 2>&1 || true
+fi
+if [ -s "$TMP/con.cells" ]; then
+  python3 "$ROOT/scripts/render_cells.py" "$TMP/con.cells" "$TMP/con.png"
+  frame "$TMP/con.png" "$HELP/help-linux-console.png"
+fi
 
 # Windows GUI
 if [ -x overlay/win32/build/mote.exe ] && need wine; then
