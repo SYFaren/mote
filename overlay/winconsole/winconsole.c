@@ -311,6 +311,44 @@ static void poll_console_size(Plat *p) {
   }
 }
 
+static int running_on_wine(void) {
+  HMODULE nt = GetModuleHandleA("ntdll.dll");
+  return nt && GetProcAddress(nt, "wine_get_version") != NULL;
+}
+
+/* Optional: dump cell grid for gallery (MOTE_DUMP_CELLS=path.cells). */
+static void dump_cells_file(Plat *p) {
+  const char *path;
+  FILE *f;
+  int i, n;
+  static int dumped;
+  if (dumped) return;
+  path = getenv("MOTE_DUMP_CELLS");
+  if (!path || !path[0] || !p->cells) return;
+  dumped = 1;
+  f = fopen(path, "wb");
+  if (!f) return;
+  fprintf(f, "MOTECELL %d %d\n", p->cols, p->rows);
+  n = p->cols * p->rows;
+  for (i = 0; i < n; i++) {
+    Cell *c = &p->cells[i];
+    unsigned char b[12];
+    mote_u32 cp = c->cp ? c->cp : (mote_u32)' ';
+    b[0] = (unsigned char)(cp & 255);
+    b[1] = (unsigned char)((cp >> 8) & 255);
+    b[2] = (unsigned char)((cp >> 16) & 255);
+    b[3] = (unsigned char)((cp >> 24) & 255);
+    b[4] = (unsigned char)((c->fg >> 16) & 255);
+    b[5] = (unsigned char)((c->fg >> 8) & 255);
+    b[6] = (unsigned char)(c->fg & 255);
+    b[7] = (unsigned char)((c->bg >> 16) & 255);
+    b[8] = (unsigned char)((c->bg >> 8) & 255);
+    b[9] = (unsigned char)(c->bg & 255);
+    fwrite(b, 1, 10, f);
+  }
+  fclose(f);
+}
+
 Plat *plat_create(const char *title, int w, int h) {
   Plat *p;
   DWORD om = 0, im = 0;
@@ -334,16 +372,20 @@ Plat *plat_create(const char *title, int w, int h) {
   om = p->out_mode_saved;
   om |= ENABLE_PROCESSED_OUTPUT;
 #ifdef ENABLE_VIRTUAL_TERMINAL_PROCESSING
-  om |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+  /* Wine often advertises VT but prints escapes as literal text — skip it. */
+  if (!running_on_wine())
+    om |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
 #endif
   SetConsoleMode(p->hout, om);
   {
     DWORD m = 0;
     p->vt = MOTE_FALSE;
 #ifdef ENABLE_VIRTUAL_TERMINAL_PROCESSING
-    if (GetConsoleMode(p->hout, &m) && (m & ENABLE_VIRTUAL_TERMINAL_PROCESSING))
+    if (!running_on_wine() && GetConsoleMode(p->hout, &m) &&
+        (m & ENABLE_VIRTUAL_TERMINAL_PROCESSING))
       p->vt = MOTE_TRUE;
 #endif
+    if (getenv("MOTE_NO_VT")) p->vt = MOTE_FALSE;
   }
   if (title && title[0]) {
     wchar_t wt[128];
@@ -474,6 +516,12 @@ void plat_end_frame(Plat *p) {
   CONSOLE_SCREEN_BUFFER_INFO info;
   int i, n = p->cols * p->rows;
   SHORT left = 0, top = 0;
+
+  dump_cells_file(p);
+  if (getenv("MOTE_SHOT_ONCE")) {
+    /* First painted frame is enough for gallery dumps. */
+    ExitProcess(0);
+  }
 
   if (p->vt) {
     /* Truecolor ANSI — paints the visible console incl. last-row status. */

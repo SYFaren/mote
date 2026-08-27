@@ -155,43 +155,20 @@ if need wine && [ -x overlay/win32/build/mote.exe ]; then
 fi
 
 # --- Windows console ---
-# wineconsole --backend=user is flaky across Wine builds; prefer a direct
-# wineconsole host, then reject ANSI-garbage / empty frames.
+# Wine's VT path prints escapes as text; winconsole now uses CHAR_INFO under Wine.
+# For a reliable gallery frame (status bar included), dump cells on first paint.
 if need wine && [ -x overlay/winconsole/build/mote.exe ]; then
+  cells="$TMP/winconsole.cells"
   raw="$TMP/winconsole.png"
-  rm -f "$raw"
-  xvfb-run -a -s "-screen 0 1400x1000x24" env HOME="${HOME:-/home/syfaren}" WINEDEBUG=-all sh -c "
-    wineconsole ./overlay/winconsole/build/mote.exe '$DEMO' &
-    pid=\$!
-    sleep 6
-    wid=\$(xdotool search --name mote 2>/dev/null | tail -1)
-    [ -z \"\$wid\" ] && wid=\$(xdotool search --pid \$pid 2>/dev/null | tail -1)
-    if [ -n \"\$wid\" ]; then
-      import -window \"\$wid\" '$raw' 2>/dev/null || true
-    fi
-    [ -f '$raw' ] || scrot -z '$raw' 2>/dev/null || true
-    kill \$pid 2>/dev/null || true
-    wineserver -k 2>/dev/null || true
-  " || true
-  if [ -f "$raw" ] && python3 - "$raw" <<'PY'
-import sys
-from PIL import Image
-im = Image.open(sys.argv[1]).convert("RGB")
-px, w, h = im.load(), im.size[0], im.size[1]
-# Reject raw ANSI dumps (lots of '[' glyphs / low color) and blank frames.
-color = sum(
-    1
-    for y in range(0, h, 2)
-    for x in range(0, w, 2)
-    if max(px[x, y]) - min(px[x, y]) > 35
-)
-lit = sum(1 for y in range(0, h, 2) for x in range(0, w, 2) if sum(px[x, y]) > 40)
-raise SystemExit(0 if color > 800 and lit > 4000 else 1)
-PY
-  then
+  rm -f "$cells" "$raw"
+  xvfb-run -a -s "-screen 0 1280x900x24" env HOME="${HOME:-$HOME}" WINEDEBUG=-all \
+    MOTE_DUMP_CELLS="$cells" MOTE_SHOT_ONCE=1 \
+    wineconsole ./overlay/winconsole/build/mote.exe -g 100x32 "$DEMO" \
+    >/tmp/mote-wc-shot.log 2>&1 || true
+  if [ -s "$cells" ] && python3 "$ROOT/scripts/render_cells.py" "$cells" "$raw"; then
     frame "$raw" "$GAL/plat-windows-console.png"
   else
-    echo "  skip plat-windows-console.png (Wine console capture unsuitable)"
+    echo "  skip plat-windows-console.png (cell dump failed)"
   fi
 fi
 
