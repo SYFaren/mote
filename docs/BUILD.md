@@ -37,9 +37,13 @@ make release-extra    # wasm (+ sdl3 if available)
 dist-release/
   by-platform/…          # folders by OS / backend
   flat/mote-linux-x11 …  # stable names for direct links
+  flat/mote-web.zip      # wasm bundle (html+js+wasm+data)
   mote-all-platforms.zip
   SHA256SUMS
 ```
+
+Live wasm demo for the download site: copy `overlay/wasm/build/*` into
+`mote-site/play/` (same four files the zip contains).
 
 Screenshots (optional): `sh scripts/shots.sh` → writes into `mote-site/gallery/plat-*.png`.
 

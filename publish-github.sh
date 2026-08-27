@@ -42,7 +42,7 @@ for f in \
   mote-windows-gui.exe mote-windows-gui.upx.exe \
   mote-windows-console.exe mote-windows-console.upx.exe \
   mote-dos.exe mote-dos.upx.exe \
-  mote.html mote.js mote.wasm mote.data
+  mote-web.zip
 do
   p="$FLAT/$f"
   if [ -f "$p" ]; then
@@ -153,7 +153,7 @@ Individual assets under \`flat/\` names are also attached for direct download.
 | \`mote-windows-gui.exe\` | Windows GUI |
 | \`mote-windows-console.exe\` | Windows console |
 | \`mote-dos.exe\` | FreeDOS / DOSBox |
-| \`mote.html\` + \`.js\` + \`.wasm\` | WebAssembly |
+| \`mote-web.zip\` | WebAssembly (html+js+wasm+data) |
 | \`*.upx\` | UPX-packed variants |
 
 ANSI C89 core; overlay chosen at compile time.
