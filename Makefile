@@ -52,13 +52,20 @@ ansi-check: $(CORE_ANSI) plat/platform.h
 	done
 	@echo "ANSI core OK"
 
-test: build/test_core
+test: build/test_core build/test_editor_keys
 	./build/test_core
+	./build/test_editor_keys
 
 CORE_TEST = core/buffer.c core/utf8.c core/undo.c core/mote_snprintf.c core/hl.c test/plat_stub.c
 build/test_core: test/test_core.c $(CORE_TEST) plat/platform.h | build
 	$(CC) -std=c89 -pedantic -Wall -Wextra -Wdeclaration-after-statement \
 		-Wno-overlength-strings -Icore -Iplat -O0 -g -o $@ test/test_core.c $(CORE_TEST)
+
+CORE_EDTEST = core/buffer.c core/utf8.c core/undo.c core/mote_snprintf.c core/hl.c \
+	core/editor.c core/theme.c core/config.c
+build/test_editor_keys: test/test_editor_keys.c $(CORE_EDTEST) plat/platform.h | build
+	$(CC) -std=c89 -Wall -Wextra -Wno-unused-parameter \
+		-Icore -Iplat -O0 -g -o $@ test/test_editor_keys.c $(CORE_EDTEST)
 
 smoke: ansi-check test
 	@sh scripts/smoke.sh
