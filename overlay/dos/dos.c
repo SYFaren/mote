@@ -7,10 +7,13 @@
 #include <pc.h>
 #include <keys.h>
 #include <sys/farptr.h>
+#include <sys/movedata.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#include "font_cp866.inc"
 
 /* VGA text cell: char + attribute */
 typedef struct {
@@ -63,40 +66,17 @@ static void vga_load_palette(void) {
   for (i = 0; i < 16; i++) vga_set_dac(i, VGA16[i]);
 }
 
-static unsigned char nearest_vga(mote_u32 rgb) {
-  int i, best = 0;
-  long best_d = 0x7fffffffL;
-  int r = (int)((rgb >> 16) & 255);
-  int g = (int)((rgb >> 8) & 255);
-  int b = (int)(rgb & 255);
-  int bri = r + g + b;
-  /* Keep modal/help panels distinct from the editor background. */
-  if (bri > 40 && bri < 120 && r < 50 && g < 55 && b < 60) return 8;
-  for (i = 0; i < 16; i++) {
-    int vr = (int)((VGA16[i] >> 16) & 255);
-    int vg = (int)((VGA16[i] >> 8) & 255);
-    int vb = (int)(VGA16[i] & 255);
-    long dr = r - vr, dg = g - vg, db = b - vb;
-    long d = dr * dr + dg * dg + db * db;
-    /* Prefer similar brightness so HL colors don't collapse to white. */
-    {
-      long dbri = bri - (vr + vg + vb);
-      d += (dbri * dbri) / 4;
-    }
-    if (d < best_d) {
-      best_d = d;
-      best = i;
-    }
-  }
-  return (unsigned char)best;
-}
-
-static unsigned char make_attr(mote_u32 fg, mote_u32 bg) {
-  return (unsigned char)((nearest_vga(bg) << 4) | (nearest_vga(fg) & 0x0f));
-}
-
 static unsigned char cp_to_dos(mote_u32 cp) {
+  /* CP866 (OEM Russian) — FreeDOS / DOSBox often use this for Cyrillic. */
   if (cp < 128) return (unsigned char)cp;
+  if (cp >= 0x0410 && cp <= 0x042F) /* А-Я */
+    return (unsigned char)(0x80 + (cp - 0x0410));
+  if (cp >= 0x0430 && cp <= 0x043F) /* а-п */
+    return (unsigned char)(0xA0 + (cp - 0x0430));
+  if (cp >= 0x0440 && cp <= 0x044F) /* р-я */
+    return (unsigned char)(0xE0 + (cp - 0x0440));
+  if (cp == 0x0401) return 0xF0; /* Ё */
+  if (cp == 0x0451) return 0xF1; /* ё */
   if (cp == 0x00B7) return 250; /* · */
   if (cp == 0x00BB) return 175; /* » */
   if (cp == 0x00AB) return 174; /* « */
@@ -112,6 +92,53 @@ static unsigned char cp_to_dos(mote_u32 cp) {
   if (cp == 0x2550) return 205;
   if (cp == 0x2551) return 186;
   return '?';
+}
+
+/* Snap theme HL RGBs onto curated VGA indices so keywords don't collapse. */
+static unsigned char nearest_vga(mote_u32 rgb) {
+  int i, best = 0;
+  long best_d = 0x7fffffffL;
+  int r = (int)((rgb >> 16) & 255);
+  int g = (int)((rgb >> 8) & 255);
+  int b = (int)(rgb & 255);
+  int bri = r + g + b;
+  /* Exact / near-exact theme anchors → fixed slots (see VGA16). */
+  if (r < 25 && g < 30 && b < 35) return 0;           /* bg */
+  if (bri > 40 && bri < 120 && r < 50 && g < 55 && b < 60) return 8; /* gutter */
+  if (r > 200 && g > 200 && b > 200) return 15;       /* white */
+  if (r > 180 && g > 180 && b > 180) return 7;        /* fg */
+  if (g > r + 20 && g > b + 10 && g > 100 && r < 160) {
+    if (bri > 400) return 10; /* number */
+    return 2;                 /* comment */
+  }
+  if (b > r + 30 && b > g && r < 120) return 1;       /* status blue */
+  if (b > 160 && g > 140 && r < 120) return 3;        /* type cyan */
+  if (b > 170 && r < 120 && g > 120 && g < 200) return 9; /* keyword blue */
+  if (r > 160 && g > 100 && g < 180 && b < 140) return 4; /* string */
+  if (r > 150 && b > 150 && g < 160) return 5;        /* keyword purple */
+  if (r > 180 && g > 140 && b < 100) return 6;        /* number/gold-ish */
+  if (r > 200 && g < 100) return 12;                  /* red */
+  if (r > 200 && g > 100 && b < 100) return 14;       /* orange */
+  for (i = 0; i < 16; i++) {
+    int vr = (int)((VGA16[i] >> 16) & 255);
+    int vg = (int)((VGA16[i] >> 8) & 255);
+    int vb = (int)(VGA16[i] & 255);
+    long dr = r - vr, dg = g - vg, db = b - vb;
+    long d = dr * dr + dg * dg + db * db;
+    {
+      long dbri = bri - (vr + vg + vb);
+      d += (dbri * dbri) / 4;
+    }
+    if (d < best_d) {
+      best_d = d;
+      best = i;
+    }
+  }
+  return (unsigned char)best;
+}
+
+static unsigned char make_attr(mote_u32 fg, mote_u32 bg) {
+  return (unsigned char)((nearest_vga(bg) << 4) | (nearest_vga(fg) & 0x0f));
 }
 
 static int idx(Plat *p, int x, int y) { return y * p->cols + x; }
@@ -298,6 +325,27 @@ static void set_text_mode(void) {
   hide_hw_cursor();
 }
 
+/* Upload CP866+ASCII Terminus glyphs so Cyrillic text is readable. */
+static void vga_load_cp866_font(void) {
+  int sel = 0;
+  int seg;
+  __dpmi_regs r;
+  seg = __dpmi_allocate_dos_memory((256 * 16 + 15) / 16, &sel);
+  if (seg == -1) return;
+  dosmemput(DOS_CP866_FONT, 256 * 16, (unsigned long)seg << 4);
+  memset(&r, 0, sizeof r);
+  r.x.ax = 0x1110; /* load user font */
+  r.h.bh = 16;
+  r.h.bl = 0;
+  r.x.cx = 256;
+  r.x.dx = 0;
+  r.x.es = (unsigned short)seg;
+  r.x.bp = 0;
+  __dpmi_int(0x10, &r);
+  __dpmi_free_dos_memory(sel);
+  hide_hw_cursor();
+}
+
 static void poke_cell(Plat *p, int x, int y, unsigned char ch, unsigned char attr) {
   unsigned long addr = 0xB8000UL + (unsigned long)((y * p->cols + x) * 2);
   (void)p->vseg;
@@ -316,6 +364,7 @@ Plat *plat_create(const char *title, int w, int h) {
   if (w >= 40 && w <= 132) cols = w;
   if (h >= 10 && h <= 60) rows = h;
   set_text_mode();
+  vga_load_cp866_font();
   vga_load_palette();
   /* If user asked 50 rows, try INT10 mode / font — keep 25 for max compat */
   if (rows > 25) rows = 25;

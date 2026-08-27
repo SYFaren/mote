@@ -355,8 +355,22 @@ int hl_line(const HlSyntax *syn, const char *line, size_t len, int in_ml,
     if (line[i] == '#' && syn && !(flags & F_HASH_SL) && !(flags & F_MARKUP) &&
         !(flags & F_MD)) {
       size_t j = i + 1;
+      size_t kw_end;
       while (j < len && (isalnum((unsigned char)line[j]) || line[j] == '_')) j++;
-      n = push_span(out, n, max_out, i, j, HL_PREPROC);
+      kw_end = j;
+      n = push_span(out, n, max_out, i, kw_end, HL_PREPROC);
+      /* #include "..." / <...> */
+      if (kw_end - (i + 1) == 7 && strncmp(line + i + 1, "include", 7) == 0) {
+        while (j < len && (line[j] == ' ' || line[j] == '\t')) j++;
+        if (j < len && (line[j] == '"' || line[j] == '<')) {
+          char open = line[j], close = (open == '"') ? '"' : '>';
+          size_t k = j + 1;
+          while (k < len && line[k] != close && line[k] != '\n') k++;
+          if (k < len) k++;
+          n = push_span(out, n, max_out, j, k, HL_STRING);
+          j = k;
+        }
+      }
       i = j;
       continue;
     }
@@ -389,8 +403,43 @@ int hl_line(const HlSyntax *syn, const char *line, size_t len, int in_ml,
         j++;
       if (syn && match_kw(syn->kws, line + i, j - i, &k))
         n = push_span(out, n, max_out, i, j, k);
+      else if (syn && (flags & F_STR) && j < len) {
+        size_t k2 = j;
+        while (k2 < len && (line[k2] == ' ' || line[k2] == '\t')) k2++;
+        /* foo( → treat as call / type-ish accent (cyan in themes). */
+        if (k2 < len && line[k2] == '(')
+          n = push_span(out, n, max_out, i, j, HL_TYPE);
+      }
       i = j;
       continue;
+    }
+
+    /* Operators / punctuation — keeps dense C looking less "plain". */
+    if (syn && (flags & F_STR)) {
+      char c = line[i];
+      if (c == '{' || c == '}' || c == '(' || c == ')' || c == '[' || c == ']') {
+        n = push_span(out, n, max_out, i, i + 1, HL_BRACKET);
+        i++;
+        continue;
+      }
+      if (c == '=' || c == '!' || c == '<' || c == '>' || c == '&' || c == '|' ||
+          c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c == '^' ||
+          c == '~' || c == '?' || c == ':' || c == ',') {
+        size_t j = i + 1;
+        if (j < len) {
+          char nch = line[j];
+          if ((c == '=' && nch == '=') || (c == '!' && nch == '=') ||
+              (c == '<' && (nch == '=' || nch == '<')) ||
+              (c == '>' && (nch == '=' || nch == '>')) ||
+              (c == '&' && nch == '&') || (c == '|' && nch == '|') ||
+              (c == '+' && nch == '+') || (c == '-' && nch == '-') ||
+              (c == '-' && nch == '>') || (c == '<' && nch == '-'))
+            j++;
+        }
+        n = push_span(out, n, max_out, i, j, HL_PREPROC);
+        i = j;
+        continue;
+      }
     }
 
     i++;

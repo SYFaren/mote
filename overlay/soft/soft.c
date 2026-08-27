@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "font8x16.inc"
+#include "font_cyr8x16.inc"
 
 mote_bool soft_resize(SoftFb *fb, int w, int h) {
   mote_u32 *n;
@@ -68,11 +69,26 @@ void soft_fill_rect(SoftFb *fb, int x, int y, int w, int h, mote_u32 rgb) {
   }
 }
 
-static void put_glyph(SoftFb *fb, int x, int y, unsigned char ch, mote_u32 rgb) {
-  const unsigned char *g;
+static const unsigned char *glyph_bits(mote_u32 cp) {
+  int lo, hi;
+  if (cp >= 32 && cp <= 126)
+    return soft_font_bits[cp - 32];
+  lo = 0;
+  hi = SOFT_FONT_CYR_N - 1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    mote_u32 v = soft_font_cyr_cp[mid];
+    if (v == cp) return soft_font_cyr_bits[mid];
+    if (v < cp) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return NULL;
+}
+
+static void put_glyph_bits(SoftFb *fb, int x, int y, const unsigned char *g,
+                           mote_u32 rgb) {
   int sc, r, c, sy, sx;
-  if (ch < 32 || ch > 126) ch = '?';
-  g = soft_font_bits[ch - 32];
+  if (!g) return;
   sc = fb->scale > 0 ? fb->scale : 1;
   for (r = 0; r < SOFT_FONT_H; r++) {
     unsigned char bits = g[r];
@@ -91,6 +107,12 @@ static void put_glyph(SoftFb *fb, int x, int y, unsigned char ch, mote_u32 rgb) 
   }
 }
 
+static void put_glyph(SoftFb *fb, int x, int y, mote_u32 cp, mote_u32 rgb) {
+  const unsigned char *g = glyph_bits(cp);
+  if (!g) g = soft_font_bits['?' - 32];
+  put_glyph_bits(fb, x, y, g, rgb);
+}
+
 void soft_draw_text(SoftFb *fb, int x, int y, const char *s, int n, mote_u32 rgb) {
   int i = 0, cx = x;
   int adv = soft_font_w(fb);
@@ -100,16 +122,13 @@ void soft_draw_text(SoftFb *fb, int x, int y, const char *s, int n, mote_u32 rgb
     int len = utf8_decode(s + i, (size_t)(n - i), &cp);
     if (len <= 0) break;
     i += len;
-    if (cp < 128)
-      put_glyph(fb, cx, y, (unsigned char)cp, rgb);
-    else if (cp == 0x2013 || cp == 0x2014 || cp == 0x2212) /* – — − */
-      put_glyph(fb, cx, y, '-', rgb);
-    else if (cp == 0x00A0) /* nbsp */
-      put_glyph(fb, cx, y, ' ', rgb);
-    else if (cp == 0x2026) /* … */
-      put_glyph(fb, cx, y, '.', rgb);
-    else
-      put_glyph(fb, cx, y, '?', rgb);
+    if (cp == 0x2013 || cp == 0x2014 || cp == 0x2212)
+      cp = (mote_u32)'-';
+    else if (cp == 0x00A0)
+      cp = (mote_u32)' ';
+    else if (cp == 0x2026)
+      cp = (mote_u32)'.';
+    put_glyph(fb, cx, y, cp, rgb);
     cx += adv;
   }
 }
