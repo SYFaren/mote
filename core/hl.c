@@ -375,22 +375,44 @@ int hl_line(const HlSyntax *syn, const char *line, size_t len, int in_ml,
       continue;
     }
 
-    if ((flags & F_NUM) && (isdigit((unsigned char)line[i]) ||
-                            (line[i] == '.' && i + 1 < len &&
-                             isdigit((unsigned char)line[i + 1])))) {
+    if ((flags & F_NUM) &&
+        ((isdigit((unsigned char)line[i]) &&
+          (i == 0 || is_sep((unsigned char)line[i - 1]))) ||
+         (line[i] == '.' && i + 1 < len && isdigit((unsigned char)line[i + 1]) &&
+          (i == 0 || is_sep((unsigned char)line[i - 1]))))) {
       size_t j = i;
       if (line[j] == '0' && j + 1 < len &&
           (line[j + 1] == 'x' || line[j + 1] == 'X')) {
         j += 2;
-        while (j < len && isxdigit((unsigned char)line[j])) j++;
-      } else {
-        while (j < len && (isdigit((unsigned char)line[j]) || line[j] == '.' ||
-                           line[j] == '_' || line[j] == 'e' || line[j] == 'E' ||
-                           line[j] == 'x' || line[j] == 'X' ||
-                           (line[j] >= 'a' && line[j] <= 'f') ||
-                           (line[j] >= 'A' && line[j] <= 'F')))
+        while (j < len && (isxdigit((unsigned char)line[j]) || line[j] == '_'))
           j++;
+      } else if (line[j] == '0' && j + 1 < len &&
+                 (line[j + 1] == 'b' || line[j + 1] == 'B')) {
+        j += 2;
+        while (j < len && (line[j] == '0' || line[j] == '1' || line[j] == '_'))
+          j++;
+      } else {
+        while (j < len && (isdigit((unsigned char)line[j]) || line[j] == '_'))
+          j++;
+        if (j < len && line[j] == '.') {
+          j++;
+          while (j < len && (isdigit((unsigned char)line[j]) || line[j] == '_'))
+            j++;
+        }
+        if (j < len && (line[j] == 'e' || line[j] == 'E')) {
+          size_t k = j + 1;
+          if (k < len && (line[k] == '+' || line[k] == '-')) k++;
+          if (k < len && isdigit((unsigned char)line[k])) {
+            j = k + 1;
+            while (j < len &&
+                   (isdigit((unsigned char)line[j]) || line[j] == '_'))
+              j++;
+          }
+        }
       }
+      while (j < len && (line[j] == 'u' || line[j] == 'U' || line[j] == 'l' ||
+                         line[j] == 'L' || line[j] == 'f' || line[j] == 'F'))
+        j++;
       n = push_span(out, n, max_out, i, j, HL_NUMBER);
       i = j;
       continue;
@@ -403,41 +425,16 @@ int hl_line(const HlSyntax *syn, const char *line, size_t len, int in_ml,
         j++;
       if (syn && match_kw(syn->kws, line + i, j - i, &k))
         n = push_span(out, n, max_out, i, j, k);
-      else if (syn && (flags & F_STR) && j < len) {
-        size_t k2 = j;
-        while (k2 < len && (line[k2] == ' ' || line[k2] == '\t')) k2++;
-        /* foo( → treat as call / type-ish accent (cyan in themes). */
-        if (k2 < len && line[k2] == '(')
-          n = push_span(out, n, max_out, i, j, HL_TYPE);
-      }
       i = j;
       continue;
     }
 
-    /* Operators / punctuation — keeps dense C looking less "plain". */
+    /* Brackets only — operators stay normal (preproc-purple ops looked broken). */
     if (syn && (flags & F_STR)) {
       char c = line[i];
       if (c == '{' || c == '}' || c == '(' || c == ')' || c == '[' || c == ']') {
         n = push_span(out, n, max_out, i, i + 1, HL_BRACKET);
         i++;
-        continue;
-      }
-      if (c == '=' || c == '!' || c == '<' || c == '>' || c == '&' || c == '|' ||
-          c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c == '^' ||
-          c == '~' || c == '?' || c == ':' || c == ',') {
-        size_t j = i + 1;
-        if (j < len) {
-          char nch = line[j];
-          if ((c == '=' && nch == '=') || (c == '!' && nch == '=') ||
-              (c == '<' && (nch == '=' || nch == '<')) ||
-              (c == '>' && (nch == '=' || nch == '>')) ||
-              (c == '&' && nch == '&') || (c == '|' && nch == '|') ||
-              (c == '+' && nch == '+') || (c == '-' && nch == '-') ||
-              (c == '-' && nch == '>') || (c == '<' && nch == '-'))
-            j++;
-        }
-        n = push_span(out, n, max_out, i, j, HL_PREPROC);
-        i = j;
         continue;
       }
     }
