@@ -18,6 +18,8 @@ typedef struct {
 struct Plat {
   int cols, rows, font_px, caret_x, caret_y, in_n, q_n, text_n;
   mote_bool caret_on, raw, paste;
+  int color_mode; /* 0=16 1=256 2=truecolor */
+  mote_bool geom_locked;
   Cell *cells;
   char *clip;
   size_t clip_n;
@@ -59,6 +61,68 @@ static void tty_size(int *cols, int *rows) {
   if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
     if (ws.ws_col) *cols = ws.ws_col;
     if (ws.ws_row) *rows = ws.ws_row;
+  }
+}
+
+/* 0=16-color (Linux VT), 1=256, 2=truecolor */
+static int detect_color_mode(void) {
+  const char *ct = getenv("COLORTERM");
+  const char *term = getenv("TERM");
+  if (getenv("MOTE_TRUECOLOR")) return 2;
+  if (getenv("MOTE_NO_TRUECOLOR")) {
+    if (term && (!strcmp(term, "linux") || !strcmp(term, "console"))) return 0;
+    return 1;
+  }
+  if (ct && (strstr(ct, "truecolor") || strstr(ct, "24bit"))) return 2;
+  if (!term || !term[0]) return 0;
+  if (!strcmp(term, "linux") || !strcmp(term, "console") || !strcmp(term, "dumb") ||
+      !strcmp(term, "vt100") || !strcmp(term, "vt102") || !strcmp(term, "ansi"))
+    return 0;
+  if (strstr(term, "-direct") || strstr(term, "truecolor")) return 2;
+  return 1;
+}
+
+static int rgb_to_256(mote_u32 rgb) {
+  int r = (int)((rgb >> 16) & 255), g = (int)((rgb >> 8) & 255), b = (int)(rgb & 255);
+  if (r == g && g == b) {
+    if (r < 8) return 16;
+    if (r > 248) return 231;
+    return 232 + (r - 8) * 24 / 247;
+  }
+  return 16 + 36 * (r * 5 / 255) + 6 * (g * 5 / 255) + (b * 5 / 255);
+}
+
+static int rgb_to_16(mote_u32 rgb) {
+  int r = (int)((rgb >> 16) & 255), g = (int)((rgb >> 8) & 255), b = (int)(rgb & 255);
+  int bright = (r + g + b) >= 380;
+  int idx = (r >= 128 ? 1 : 0) | (g >= 128 ? 2 : 0) | (b >= 128 ? 4 : 0);
+  /* Prefer distinct status: strong blue / white */
+  if (b > r + 40 && b > g + 40 && b >= 100) idx = 4; /* blue */
+  if (r > 200 && g > 200 && b > 200) idx = 7;        /* white */
+  return bright ? idx + 8 : idx;
+}
+
+static void sgr_fg(Plat *p, mote_u32 rgb) {
+  if (p->color_mode >= 2)
+    printf("\033[38;2;%u;%u;%um", (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
+  else if (p->color_mode == 1)
+    printf("\033[38;5;%dm", rgb_to_256(rgb));
+  else {
+    int c = rgb_to_16(rgb);
+    if (c < 8) printf("\033[3%dm", c);
+    else printf("\033[9%dm", c - 8);
+  }
+}
+
+static void sgr_bg(Plat *p, mote_u32 rgb) {
+  if (p->color_mode >= 2)
+    printf("\033[48;2;%u;%u;%um", (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
+  else if (p->color_mode == 1)
+    printf("\033[48;5;%dm", rgb_to_256(rgb));
+  else {
+    int c = rgb_to_16(rgb);
+    if (c < 8) printf("\033[4%dm", c);
+    else printf("\033[10%dm", c - 8);
   }
 }
 
@@ -352,9 +416,15 @@ static void flush_esc(Plat *p) {
 static void check_winch(Plat *p) {
   int cols, rows;
   PlatEvent e;
-  if (!g_winch) return;
+  if (p->geom_locked) {
+    g_winch = 0;
+    return;
+  }
+  /* Always re-read size: some TTYs miss SIGWINCH; also fixes first-paint races. */
   g_winch = 0;
   tty_size(&cols, &rows);
+  if (cols < 1) cols = 1;
+  if (rows < 1) rows = 1;
   if (cols == p->cols && rows == p->rows) return;
   if (!resize(p, cols, rows)) return;
   memset(&e, 0, sizeof e);
@@ -369,10 +439,12 @@ Plat *plat_create(const char *title, int w, int h) {
   p = (Plat *)calloc(1, sizeof *p);
   if (!p) return NULL;
   p->font_px = 15;
+  p->color_mode = detect_color_mode();
   tty_size(&cols, &rows);
   if (w >= 40 && w <= 512 && h >= 10 && h <= 256) {
     cols = w;
     rows = h;
+    p->geom_locked = MOTE_TRUE;
   }
   if (!resize(p, cols, rows)) {
     free(p);
@@ -465,13 +537,13 @@ void plat_set_font_px(Plat *p, int px) {
 }
 int plat_font_px(Plat *p) { return p->font_px; }
 
-void plat_begin_frame(Plat *p) { (void)p; }
+void plat_begin_frame(Plat *p) { check_winch(p); }
 
 void plat_clear(Plat *p, mote_u32 rgb) {
   int i, n = p->cols * p->rows;
   for (i = 0; i < n; i++) {
     p->cells[i].cp = ' ';
-    p->cells[i].fg = 0xD4D4D4ul;
+    p->cells[i].fg = rgb; /* same as bg → blank */
     p->cells[i].bg = rgb;
   }
 }
@@ -484,7 +556,12 @@ void plat_fill_rect(Plat *p, int x, int y, int w, int h, mote_u32 rgb) {
   if (x1 > p->cols) x1 = p->cols;
   if (y1 > p->rows) y1 = p->rows;
   for (yi = y; yi < y1; yi++)
-    for (xi = x; xi < x1; xi++) p->cells[idx(p, xi, yi)].bg = rgb;
+    for (xi = x; xi < x1; xi++) {
+      Cell *c = &p->cells[idx(p, xi, yi)];
+      c->cp = ' ';
+      c->fg = rgb; /* invisible until plat_draw_text sets fg */
+      c->bg = rgb;
+    }
 }
 
 void plat_draw_text(Plat *p, int x, int y, const char *s, int n, mote_u32 rgb) {
@@ -543,10 +620,13 @@ void plat_end_frame(Plat *p) {
     }
   }
 
-  /* Hide cursor; paint full grid with truecolor (status = last row). */
+  /* Hide cursor; paint full grid. Erase to EOL so a wider TTY never shows a
+   * short status strip. Use 24-bit SGR only when the terminal actually supports it. */
   fputs("\033[?25l\033[H", stdout);
   for (y = 0; y < p->rows; y++) {
     if (y > 0) printf("\033[%d;1H", y + 1);
+    lfg = 0xffffffffu;
+    lbg = 0xffffffffu;
     for (x = 0; x < p->cols; x++) {
       Cell *c = &p->cells[idx(p, x, y)];
       mote_u32 fg = c->fg, bg = c->bg, cp = c->cp ? c->cp : (mote_u32)' ';
@@ -558,19 +638,19 @@ void plat_end_frame(Plat *p) {
         bg = t;
       }
       if (fg != lfg) {
-        printf("\033[38;2;%u;%u;%um", (fg >> 16) & 255, (fg >> 8) & 255,
-               fg & 255);
+        sgr_fg(p, fg);
         lfg = fg;
       }
       if (bg != lbg) {
-        printf("\033[48;2;%u;%u;%um", (bg >> 16) & 255, (bg >> 8) & 255,
-               bg & 255);
+        sgr_bg(p, bg);
         lbg = bg;
       }
       un = utf8_encode(cp, u);
       if (un > 0) fwrite(u, 1, (size_t)un, stdout);
       else fputc('?', stdout);
     }
+    /* Clear any leftover columns if the host TTY is wider than our grid. */
+    fputs("\033[K", stdout);
   }
   fputs("\033[0m", stdout);
   fflush(stdout);

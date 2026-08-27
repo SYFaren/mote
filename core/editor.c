@@ -2036,8 +2036,12 @@ void ed_draw(Editor *e, Plat *p) {
              d->eol == EOL_CRLF ? "CRLF" : "LF",
              hl_lang_name(syn), e->status[0] ? e->status : "F1 help");
   }
-  draw_text_fit(p, e->cw > 0 ? e->cw : 1, sw, bar, (int)strlen(bar),
-                t->status_fg, w - (e->cw > 0 ? e->cw : 1), e->cw);
+  /* Full-width status text (pad 1 cell when space allows). */
+  {
+    int pad = (e->cw > 0 && w > e->cw * 2) ? e->cw : 0;
+    draw_text_fit(p, pad, sw, bar, (int)strlen(bar), t->status_fg, w - pad,
+                  e->cw > 0 ? e->cw : 1);
+  }
 
   if (e->mode == MODE_HELP || e->mode == MODE_RECENT) {
     int nlines_h, box_h, box_y, box_w, max_h, max_lines, draw_n, text_w;
