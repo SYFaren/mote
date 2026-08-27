@@ -1,190 +1,273 @@
 #!/bin/sh
 # Capture clean per-platform screenshots → mote-site/gallery/plat-*.png
-# Crops to editor content (no huge black desktop padding).
+# Full editor chrome (status bar included), no tiny postage stamps.
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 SITE="${SITE_DIR:-$HOME/Projects/mote-site}"
 GAL="$SITE/gallery"
 DEMO="$ROOT/examples/hello_mote.c"
+FRAME="$ROOT/scripts/shot_frame.py"
 TMP="${TMPDIR:-/tmp}/mote-shots-$$"
 mkdir -p "$GAL" "$TMP"
 cd "$ROOT"
+export PATH="${HOME}/.local/opt/djgpp/bin:${PATH:-}"
+export SDL_VIDEODRIVER=x11
 
 need() { command -v "$1" >/dev/null 2>&1; }
 
-# Crop near-black desktop padding; keep editor chrome.
-crop_content() {
-  src="$1" dst="$2"
-  if need convert; then
-    convert "$src" -bordercolor black -border 1 -fuzz 8% -trim +repage \
-      -bordercolor '#101010' -border 8 "$dst" 2>/dev/null || cp -f "$src" "$dst"
+frame() {
+  # $1 src $2 dst [ --nearest ]
+  python3 "$FRAME" "$@"
+}
+
+# Soft framebuffer dump (pixel-perfect, always includes status).
+shot_fb() {
+  # $1 out name, $2 binary, rest env/args handled by caller via dump path
+  out="$GAL/$1"
+  ppm="$2"
+  if [ -f "$ppm" ]; then
+    convert "$ppm" "$TMP/fb.png"
+    frame "$TMP/fb.png" "$out"
   else
-    cp -f "$src" "$dst"
+    echo "  skip $1 (no fb dump)"
   fi
 }
 
-shot_xvfb_app() {
-  # $1 out name (plat-….png), rest = command
-  out="$GAL/$1"
+# Capture focused window by name/class via import (full client area).
+shot_win() {
+  outname="$1"
+  raw="$TMP/$outname.raw.png"
   shift
-  raw="$TMP/raw-$1.png"
-  raw="$TMP/raw.png"
+  # remaining: shell snippet that starts the app and prints WID=...
   rm -f "$raw"
-  if ! need xvfb-run || ! need scrot; then
-    echo "  skip $out (need xvfb-run+scrot)"
+  if ! need xvfb-run || ! need import; then
+    echo "  skip $outname (need xvfb-run+import)"
     return 0
   fi
-  xvfb-run -a -s "-screen 0 1024x768x24" sh -c "
-    $* &
-    pid=\$!
-    sleep 1.4
-    if command -v xdotool >/dev/null 2>&1; then
-      xdotool search --name mote windowactivate --sync 2>/dev/null || true
-      sleep 0.2
-      scrot -u -z '$raw' 2>/dev/null || scrot -z '$raw'
-    else
-      scrot -z '$raw'
+  xvfb-run -a -s "-screen 0 1280x900x24" sh -c "
+    set -e
+    $*
+    wid=\${WID:-}
+    if [ -z \"\$wid\" ]; then
+      echo 'no window' >&2
+      exit 0
     fi
-    kill \$pid 2>/dev/null || true
-    wait \$pid 2>/dev/null || true
+    # Give the first paint time (status bar).
+    sleep 0.8
+    import -window \"\$wid\" '$raw' || scrot -u -z '$raw' || scrot -z '$raw'
+    kill \$APP_PID 2>/dev/null || true
+    wait \$APP_PID 2>/dev/null || true
+    [ -n \"\${EXTRA_KILL:-}\" ] && eval \"\$EXTRA_KILL\" || true
   " || true
   if [ -f "$raw" ]; then
-    crop_content "$raw" "$out"
-    echo "  shot $(basename "$out") ($(identify -format '%wx%h' "$out" 2>/dev/null || echo ok))"
+    frame "$raw" "$GAL/$outname"
   else
-    echo "  skip $out (no capture)"
+    echo "  skip $outname (no capture)"
   fi
 }
 
-echo "== screenshots → $GAL =="
-
+echo "== build =="
 make -C overlay/x11 >/dev/null
 make -C overlay/sdl >/dev/null
 make -C overlay/console >/dev/null
 make -C overlay/wayland >/dev/null
 make -C overlay/win32 >/dev/null
 make -C overlay/winconsole >/dev/null
+make -C overlay/dos >/dev/null 2>/dev/null || true
+# wasm optional
+[ -f overlay/wasm/build/mote.html ] || make -C overlay/wasm >/dev/null 2>/dev/null || true
 
-shot_xvfb_app plat-linux-x11.png \
-  ./overlay/x11/build/mote -g 720x420 "$DEMO"
+echo "== screenshots → $GAL =="
 
-shot_xvfb_app plat-linux-sdl2.png \
-  ./overlay/sdl/build/mote -g 720x420 "$DEMO"
+# --- SDL (soft FB) ---
+rm -f "$TMP/sdl.ppm"
+xvfb-run -a -s "-screen 0 1100x800x24" sh -c "
+  MOTE_DUMP_FB='$TMP/sdl.ppm' ./overlay/sdl/build/mote -g 880x520 '$DEMO' >/dev/null 2>&1 &
+  pid=\$!; sleep 1.6; kill \$pid 2>/dev/null; wait \$pid 2>/dev/null || true
+" || true
+shot_fb plat-linux-sdl2.png "$TMP/sdl.ppm"
 
-# console in xterm
-if need xvfb-run && need xterm && need scrot; then
-  raw="$TMP/console.png"
-  xvfb-run -a -s "-screen 0 900x600x24" sh -c "
-    xterm -geometry 100x32 -fa Monospace -fs 11 -bg black -fg white -e \
-      ./overlay/console/build/mote '$DEMO' &
-    pid=\$!
-    sleep 1.5
-    if command -v xdotool >/dev/null 2>&1; then
-      xdotool search --class xterm windowactivate --sync 2>/dev/null || true
-      scrot -u -z '$raw' 2>/dev/null || scrot -z '$raw'
-    else
-      scrot -z '$raw'
-    fi
-    kill \$pid 2>/dev/null || true
-    wait \$pid 2>/dev/null || true
-  " || true
-  [ -f "$raw" ] && crop_content "$raw" "$GAL/plat-linux-console.png" && \
-    echo "  shot plat-linux-console.png" || echo "  skip console"
-fi
-
-# Wayland nested: GL/Xvfb scrot often invents vertical stripes. Prefer soft-FB dump.
-if need weston && need xvfb-run; then
-  raw="$TMP/wayland.ppm"
-  rm -f "$raw"
-  xvfb-run -a -s "-screen 0 1024x768x24" sh -c "
-    weston --backend=x11-backend.so --width=900 --height=560 --socket=mote-wl-shot \
+# --- Wayland (soft FB via nested weston) ---
+rm -f "$TMP/wayland.ppm"
+if need weston; then
+  xvfb-run -a -s "-screen 0 1200x900x24" sh -c "
+    weston --backend=x11-backend.so --width=1000 --height=700 --socket=mote-wl-shot \
       >/tmp/weston-shot.log 2>&1 &
     echo \$! > '$TMP/weston.pid'
     sleep 1.8
-    WAYLAND_DISPLAY=mote-wl-shot MOTE_DUMP_FB='$raw' \
-      ./overlay/wayland/build/mote -g 720x420 '$DEMO' >/tmp/wl-mote.log 2>&1 &
+    WAYLAND_DISPLAY=mote-wl-shot MOTE_DUMP_FB='$TMP/wayland.ppm' \
+      ./overlay/wayland/build/mote -g 880x520 '$DEMO' >/tmp/wl-mote.log 2>&1 &
     echo \$! > '$TMP/mote.pid'
-    sleep 2.0
+    sleep 2.2
     kill \$(cat '$TMP/mote.pid') \$(cat '$TMP/weston.pid') 2>/dev/null || true
   " || true
-  if [ -f "$raw" ] && need convert; then
-    convert "$raw" -gravity center -background '#0e0e0e' -extent 960x600 \
-      "$GAL/plat-linux-wayland.png"
-    echo "  shot plat-linux-wayland.png (fb dump)"
-  else
-    echo "  skip wayland"
-  fi
+  shot_fb plat-linux-wayland.png "$TMP/wayland.ppm"
+else
+  echo "  skip plat-linux-wayland.png (no weston)"
 fi
 
-# Windows GUI (wine)
+# --- X11 ---
+shot_win plat-linux-x11.png '
+  ./overlay/x11/build/mote -g 880x520 "'"$DEMO"'" >/dev/null 2>&1 &
+  APP_PID=$!
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    WID=$(xdotool search --pid $APP_PID 2>/dev/null | tail -1)
+    [ -n "$WID" ] && break
+    WID=$(xdotool search --name mote 2>/dev/null | tail -1)
+    [ -n "$WID" ] && break
+    sleep 0.25
+  done
+  export WID APP_PID
+'
+
+# --- Console (xterm) — capture full xterm window so status row is kept ---
+shot_win plat-linux-console.png '
+  xterm -geometry 110x36 -fa "DejaVu Sans Mono" -fs 12 \
+    -bg "#1e1e1e" -fg "#d4d4d4" -T mote-con-shot \
+    -e ./overlay/console/build/mote "'"$DEMO"'" &
+  APP_PID=$!
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    WID=$(xdotool search --name mote-con-shot 2>/dev/null | tail -1)
+    [ -n "$WID" ] && break
+    WID=$(xdotool search --class xterm 2>/dev/null | tail -1)
+    [ -n "$WID" ] && break
+    sleep 0.25
+  done
+  export WID APP_PID
+'
+
+# --- Windows GUI (Wine) ---
 if need wine && [ -x overlay/win32/build/mote.exe ]; then
-  shot_xvfb_app plat-windows-gui.png \
-    wine overlay/win32/build/mote.exe -g 720x420 "$DEMO"
+  shot_win plat-windows-gui.png '
+    wine ./overlay/win32/build/mote.exe -g 880x520 "'"$DEMO"'" >/dev/null 2>&1 &
+    APP_PID=$!
+    sleep 2.0
+    for i in 1 2 3 4 5 6 7 8; do
+      WID=$(xdotool search --pid $APP_PID 2>/dev/null | tail -1)
+      [ -n "$WID" ] && break
+      WID=$(xdotool search --name mote 2>/dev/null | tail -1)
+      [ -n "$WID" ] && break
+      sleep 0.3
+    done
+    EXTRA_KILL="wineserver -k 2>/dev/null || true"
+    export WID APP_PID EXTRA_KILL
+  '
 fi
 
-# Windows console
+# --- Windows console ---
+# wineconsole --backend=user is flaky across Wine builds; prefer a direct
+# wineconsole host, then reject ANSI-garbage / empty frames.
 if need wine && [ -x overlay/winconsole/build/mote.exe ]; then
   raw="$TMP/winconsole.png"
-  if need xvfb-run && need scrot; then
-    xvfb-run -a -s "-screen 0 1024x768x24" sh -c "
-      wineconsole --backend=user overlay/winconsole/build/mote.exe '$DEMO' &
-      sleep 3
-      scrot -z '$raw'
-      pkill -f 'mote.exe' 2>/dev/null || true
-      pkill -f wineconsole 2>/dev/null || true
-    " || true
-    [ -f "$raw" ] && crop_content "$raw" "$GAL/plat-windows-console.png" && \
-      echo "  shot plat-windows-console.png" || echo "  skip winconsole"
+  rm -f "$raw"
+  xvfb-run -a -s "-screen 0 1400x1000x24" env HOME="${HOME:-/home/syfaren}" WINEDEBUG=-all sh -c "
+    wineconsole ./overlay/winconsole/build/mote.exe '$DEMO' &
+    pid=\$!
+    sleep 6
+    wid=\$(xdotool search --name mote 2>/dev/null | tail -1)
+    [ -z \"\$wid\" ] && wid=\$(xdotool search --pid \$pid 2>/dev/null | tail -1)
+    if [ -n \"\$wid\" ]; then
+      import -window \"\$wid\" '$raw' 2>/dev/null || true
+    fi
+    [ -f '$raw' ] || scrot -z '$raw' 2>/dev/null || true
+    kill \$pid 2>/dev/null || true
+    wineserver -k 2>/dev/null || true
+  " || true
+  if [ -f "$raw" ] && python3 - "$raw" <<'PY'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+px, w, h = im.load(), im.size[0], im.size[1]
+# Reject raw ANSI dumps (lots of '[' glyphs / low color) and blank frames.
+color = sum(
+    1
+    for y in range(0, h, 2)
+    for x in range(0, w, 2)
+    if max(px[x, y]) - min(px[x, y]) > 35
+)
+lit = sum(1 for y in range(0, h, 2) for x in range(0, w, 2) if sum(px[x, y]) > 40)
+raise SystemExit(0 if color > 800 and lit > 4000 else 1)
+PY
+  then
+    frame "$raw" "$GAL/plat-windows-console.png"
+  else
+    echo "  skip plat-windows-console.png (Wine console capture unsuitable)"
   fi
 fi
 
-# DOS via DOSBox if present
+# --- DOS ---
 if need dosbox && [ -x overlay/dos/build/mote.exe ]; then
-  raw="$TMP/dos.png"
+  conf="$TMP/dos.conf"
   mkdir -p "$TMP/dos"
-  cp -f overlay/dos/build/mote.exe "$DEMO" "$TMP/dos/" 2>/dev/null || true
+  cp -f overlay/dos/build/mote.exe "$TMP/dos/MOTE.EXE"
   cp -f "$DEMO" "$TMP/dos/HELLO.C"
-  if need xvfb-run && need scrot; then
-    xvfb-run -a -s "-screen 0 800x600x24" sh -c "
-      dosbox -conf /dev/null -c 'MOUNT C $TMP/dos' -c 'C:' -c 'mote.exe HELLO.C' \
-        >/tmp/dosbox.log 2>&1 &
-      sleep 4
-      scrot -z '$raw'
-      pkill -f dosbox 2>/dev/null || true
-    " || true
-    [ -f "$raw" ] && crop_content "$raw" "$GAL/plat-dos.png" && \
-      echo "  shot plat-dos.png" || echo "  skip dos"
+  [ -f overlay/dos/runtime/CWSDPMI.EXE ] && cp -f overlay/dos/runtime/CWSDPMI.EXE "$TMP/dos/"
+  cat > "$conf" <<EOF
+[sdl]
+fullscreen=false
+output=surface
+autolock=false
+windowresolution=800x600
+[cpu]
+cycles=25000
+[autoexec]
+mount c $TMP/dos
+c:
+MOTE.EXE HELLO.C
+EOF
+  raw="$TMP/dos.raw.png"
+  rm -f "$raw"
+  xvfb-run -a -s "-screen 0 1024x768x24" sh -c "
+    dosbox -conf '$conf' >/tmp/dos-shot.log 2>&1 &
+    pid=\$!
+    sleep 5.0
+    wid=\$(xdotool search --name DOSBox 2>/dev/null | head -1)
+    if [ -n \"\$wid\" ]; then
+      import -window \"\$wid\" '$raw' 2>/dev/null || true
+    fi
+    [ -f '$raw' ] || scrot -z '$raw' 2>/dev/null || true
+    kill \$pid 2>/dev/null || true
+    wait \$pid 2>/dev/null || true
+  " || true
+  if [ -f "$raw" ]; then
+    frame "$raw" "$GAL/plat-dos.png" --nearest
+  else
+    echo "  skip plat-dos.png"
   fi
 fi
 
-# WASM — real browser after fix
+# --- WASM (headless Chrome — reliable full paint) ---
 if [ -f overlay/wasm/build/mote.html ] && need google-chrome; then
-  raw="$TMP/wasm.png"
+  raw="$TMP/wasm.raw.png"
+  rm -f "$raw"
   (
     cd overlay/wasm/build
-    python3 -m http.server 8765 >/tmp/mote-wasm-http.log 2>&1 &
+    python3 -m http.server 8766 >/tmp/mote-wasm-http.log 2>&1 &
     echo $! > "$TMP/http.pid"
   )
-  sleep 0.6
-  if need xvfb-run && need scrot; then
-    xvfb-run -a -s "-screen 0 1100x800x24" sh -c "
-      google-chrome --disable-gpu --window-size=1000,700 --window-position=0,0 \
-        --app=http://127.0.0.1:8765/mote.html >/tmp/chrome-wasm.log 2>&1 &
-      sleep 5
-      if command -v xdotool >/dev/null; then
-        xdotool mousemove 500 400 click 1
-        sleep 1.5
-      fi
-      scrot -z '$raw'
-      pkill -f 'chrome.*8765' 2>/dev/null || pkill -f google-chrome 2>/dev/null || true
-    " || true
-  fi
+  sleep 0.8
+  google-chrome --headless=new --disable-gpu --hide-scrollbars \
+    --window-size=1100,720 \
+    --screenshot="$raw" \
+    "http://127.0.0.1:8766/mote.html" >/tmp/chrome-wasm.log 2>&1 || true
   kill "$(cat "$TMP/http.pid")" 2>/dev/null || true
   if [ -f "$raw" ]; then
-    crop_content "$raw" "$GAL/plat-web-wasm.png"
-    echo "  shot plat-web-wasm.png"
+    # Reject blank black frames
+    if python3 - "$raw" <<'PY'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+px, w, h = im.load(), im.size[0], im.size[1]
+lit = sum(1 for y in range(0, h, 3) for x in range(0, w, 3) if sum(px[x, y]) > 40)
+raise SystemExit(0 if lit > 2000 else 1)
+PY
+    then
+      frame "$raw" "$GAL/plat-web-wasm.png"
+    else
+      echo "  skip plat-web-wasm.png (blank)"
+    fi
   else
-    echo "  skip wasm"
+    echo "  skip plat-web-wasm.png"
   fi
 fi
 
