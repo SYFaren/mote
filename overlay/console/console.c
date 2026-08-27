@@ -21,6 +21,7 @@ struct Plat {
   int color_mode; /* 0=16 1=256 2=truecolor */
   mote_bool geom_locked;
   Cell *cells;
+  Cell *prev; /* last painted frame — skip unchanged cells (less flicker) */
   char *clip;
   size_t clip_n;
   struct termios saved;
@@ -38,7 +39,7 @@ static void on_winch(int s) {
 static int idx(Plat *p, int x, int y) { return y * p->cols + x; }
 
 static mote_bool resize(Plat *p, int cols, int rows) {
-  Cell *c;
+  Cell *c, *prev;
   size_t n;
   if (cols < 1) cols = 1;
   if (rows < 1) rows = 1;
@@ -46,11 +47,24 @@ static mote_bool resize(Plat *p, int cols, int rows) {
   if (rows > 256) rows = 256;
   n = (size_t)cols * (size_t)rows;
   c = (Cell *)calloc(n, sizeof(Cell));
-  if (!c) return MOTE_FALSE;
+  prev = (Cell *)calloc(n, sizeof(Cell));
+  if (!c || !prev) {
+    free(c);
+    free(prev);
+    return MOTE_FALSE;
+  }
   free(p->cells);
+  free(p->prev);
   p->cells = c;
+  p->prev = prev;
   p->cols = cols;
   p->rows = rows;
+  /* Force full repaint after resize (prev mismatch). */
+  for (n = 0; n < (size_t)cols * (size_t)rows; n++) {
+    p->prev[n].cp = (mote_u32)~0u;
+    p->prev[n].fg = 0;
+    p->prev[n].bg = 0;
+  }
   return MOTE_TRUE;
 }
 
@@ -195,6 +209,7 @@ static void ctrl_key(Plat *p, int c, mote_bool shift) {
   case 'c': k = PK_COPY; break;
   case 'v': k = PK_PASTE; break;
   case 'a': k = PK_SELALL; break;
+  case 'h': k = PK_HELP; break;
   case 't': k = PK_THEME; break;
   case 'w': k = shift ? PK_CLOSEDOC : PK_WRAP; break;
   case 'd': k = PK_DUPLINE; break;
@@ -208,10 +223,28 @@ static void ctrl_key(Plat *p, int c, mote_bool shift) {
   case '-':
   case '_': k = PK_ZOOMOUT; break;
   case '0': k = PK_ZOOMRESET; break;
-  case ']': k = PK_BRACKET; break;
+  case ']':
+  case '\\': k = PK_BRACKET; break;
   default: break;
   }
   if (k != PK_NONE) key_flush(p, k, MOTE_TRUE, shift);
+}
+
+static void alt_letter(Plat *p, char ch) {
+  char up = ch;
+  PlatKey ak = PK_NONE;
+  if (up >= 'a' && up <= 'z') up = (char)(up - 'a' + 'A');
+  if (up == 'H') ak = PK_HELP;
+  else if (up == 'C') ak = PK_FINDCASE;
+  else if (up == 'W') ak = PK_FINDWORD;
+  else if (up == 'S') ak = PK_SAVEAS;
+  else if (up == 'R') ak = PK_READONLY;
+  else if (up == 'K') ak = PK_DELLINE;
+  else if (up == 'E') ak = PK_EOL;
+  else if (up == 'N') ak = PK_NEXTDOC;
+  else if (up == 'P') ak = PK_PREVDOC;
+  if (ak != PK_NONE) key_flush(p, ak, MOTE_FALSE, MOTE_FALSE);
+  else text_add(p, &ch, 1);
 }
 
 static int finish_esc(Plat *p) {
@@ -223,9 +256,13 @@ static int finish_esc(Plat *p) {
 
   if (n < 2) return 0;
 
-  if (b[1] == 'O') { /* SS3: \033OP = F1 — may arrive as ESC O / ESC O P */
+  /* SS3: ESC O P/Q/R/S = F1–F4 (xterm / many GUI terms) */
+  if (b[1] == 'O') {
     if (n < 3) return 0;
     if (b[2] == 'P') k = PK_F1;
+    else if (b[2] == 'Q') k = PK_NEXTDOC; /* F2 */
+    else if (b[2] == 'R') k = PK_FINDNEXT; /* F3 */
+    else if (b[2] == 'S') k = PK_FINDPREV; /* F4 / often Shift-F3 sibling */
     else if (b[2] == 'H') k = PK_HOME;
     else if (b[2] == 'F') k = PK_END;
     p->in_n = 0;
@@ -234,40 +271,38 @@ static int finish_esc(Plat *p) {
   }
 
   if (b[1] != '[') {
-    /* ESC + char → Alt+char (TTY Alt bindings; see soft_keys.h). */
+    /* ESC + char → Alt+char */
     p->in_n = 0;
-    if (n == 2) {
-      char ch = b[1];
-      char up = ch;
-      PlatKey ak = PK_NONE;
-      if (up >= 'a' && up <= 'z') up = (char)(up - 'a' + 'A');
-      if (up == 'H') ak = PK_HELP;
-      else if (up == 'C') ak = PK_FINDCASE;
-      else if (up == 'W') ak = PK_FINDWORD;
-      else if (up == 'S') ak = PK_SAVEAS;
-      else if (up == 'R') ak = PK_READONLY;
-      else if (up == 'K') ak = PK_DELLINE;
-      else if (up == 'E') ak = PK_EOL;
-      else if (up == 'N') ak = PK_NEXTDOC;
-      else if (up == 'P') ak = PK_PREVDOC;
-      if (ak != PK_NONE) key_flush(p, ak, MOTE_FALSE, MOTE_FALSE);
-      else text_add(p, &ch, 1);
-    }
+    if (n == 2) alt_letter(p, b[1]);
     return 1;
   }
 
-  /* CSI: ESC [ … final — need at least ESC [ X */
+  /* Linux VT F1–F5: ESC [ [ A–E  (must run before treating '[' as CSI final) */
+  if (n >= 3 && b[2] == '[') {
+    if (n < 4) return 0;
+    p->in_n = 0;
+    switch (b[3]) {
+    case 'A': k = PK_F1; break;
+    case 'B': k = PK_NEXTDOC; break;  /* F2 */
+    case 'C': k = PK_FINDNEXT; break; /* F3 */
+    case 'D': k = PK_CLOSEDOC; break; /* F4 */
+    case 'E': k = PK_RELOAD; break;   /* F5 */
+    default: break;
+    }
+    if (k != PK_NONE) key_flush(p, k, MOTE_FALSE, MOTE_FALSE);
+    return 1;
+  }
+
+  /* CSI: ESC [ … final */
   if (n < 3) return 0;
-  /* final byte is the last; must not still be collecting params */
   if (b[n - 1] < 0x40 || b[n - 1] > 0x7e) return 0;
 
-  /* modifiers \033[1;N? */
   for (j = 2; j < n - 1; j++) {
     if (b[j] == ';' && j + 1 < n - 1) {
       int mod = b[j + 1] - '0';
       if (mod >= 2) {
-        if (mod == 2 || mod == 6 || mod == 4) shift = MOTE_TRUE;
-        if (mod == 5 || mod == 6 || mod == 4) ctrl = MOTE_TRUE;
+        if (mod == 2 || mod == 6 || mod == 4 || mod == 8) shift = MOTE_TRUE;
+        if (mod == 5 || mod == 6 || mod == 7 || mod == 8) ctrl = MOTE_TRUE;
       }
     }
   }
@@ -279,12 +314,11 @@ static int finish_esc(Plat *p) {
   case 'D': k = PK_LEFT; break;
   case 'H': k = PK_HOME; break;
   case 'F': k = PK_END; break;
-  case 'Z': k = PK_TAB; shift = MOTE_TRUE; break; /* backtab */
+  case 'Z': k = PK_TAB; shift = MOTE_TRUE; break;
   case '~':
     code = 0;
     for (j = 2; j < n - 1 && b[j] >= '0' && b[j] <= '9'; j++)
       code = code * 10 + (b[j] - '0');
-    /* xterm: CSI 27 ; mod ; key ~  (Ctrl/Shift+Tab) */
     if (code == 27) {
       int parts[3] = {0, 0, 0}, pi = 0, v = 0;
       for (j = 2; j < n - 1; j++) {
@@ -307,12 +341,12 @@ static int finish_esc(Plat *p) {
         return 1;
       }
     }
-    if (code == 200) { /* bracketed paste start */
+    if (code == 200) {
       p->paste = MOTE_TRUE;
       p->in_n = 0;
       return 1;
     }
-    if (code == 201) { /* bracketed paste end */
+    if (code == 201) {
       p->paste = MOTE_FALSE;
       text_flush(p);
       p->in_n = 0;
@@ -323,11 +357,15 @@ static int finish_esc(Plat *p) {
     else if (code == 3) k = PK_DELETE;
     else if (code == 5) k = PK_PGUP;
     else if (code == 6) k = PK_PGDN;
-    else if (code == 11 || code == 12) k = PK_F1;
-    else if (code == 13 || code == 14) k = shift ? PK_FINDPREV : PK_FINDNEXT;
-    else if (code == 15) k = PK_RELOAD;
-    else if (code == 17) k = PK_F1; /* some terms */
-    else if (code == 18) k = PK_WS;
+    else if (code == 11) k = PK_F1;
+    else if (code == 12) k = PK_NEXTDOC; /* F2 */
+    else if (code == 13) k = shift ? PK_FINDPREV : PK_FINDNEXT; /* F3 */
+    else if (code == 14) k = shift ? PK_FINDPREV : PK_CLOSEDOC; /* F4 / S-F3 */
+    else if (code == 15) k = PK_RELOAD; /* F5 */
+    else if (code == 17) k = PK_WS;     /* F6 — unused; keep clear */
+    else if (code == 18) k = PK_WS;     /* F7 */
+    else if (code == 19) k = PK_WS;
+    else if (code == 20 || code == 21 || code == 23 || code == 24) k = PK_F1;
     break;
   default:
     break;
@@ -339,7 +377,6 @@ static int finish_esc(Plat *p) {
 
 static void ingest(Plat *p, const unsigned char *buf, int n) {
   int i;
-  /* >2 bytes in one read ⇒ paste/burst (not a lone key / UTF-8 scalar) */
   int burst = p->paste || n > 2;
   for (i = 0; i < n; i++) {
     unsigned char c = buf[i];
@@ -354,13 +391,23 @@ static void ingest(Plat *p, const unsigned char *buf, int n) {
       continue;
     }
 
+    /* Linux VT Meta/Alt often sets high bit instead of ESC-prefix. */
+    if (c >= 0x80) {
+      unsigned char ch = (unsigned char)(c & 0x7f);
+      if (ch >= 1 && ch <= 26) {
+        ctrl_key(p, 'a' + (int)ch - 1, MOTE_FALSE);
+      } else if (ch >= 32 && ch != 0x7f) {
+        alt_letter(p, (char)ch);
+      }
+      continue;
+    }
+
     if (c == 0x7f || c == 0x08) {
       key_flush(p, PK_BACKSPACE, MOTE_FALSE, MOTE_FALSE);
       continue;
     }
     if (c == '\r' || c == '\n') {
       if (burst) {
-        /* paste: raw newlines, no auto-indent / no double CR+LF */
         if (c == '\r' && i + 1 < n && buf[i + 1] == '\n') i++;
         text_add(p, "\n", 1);
       } else {
@@ -381,7 +428,6 @@ static void ingest(Plat *p, const unsigned char *buf, int n) {
     }
     if (c < 32) continue;
 
-    /* UTF-8 — batch into PE_TEXT so paste is one insert (no autoclose) */
     {
       char tmp[4];
       int have = 1;
@@ -403,8 +449,8 @@ static void flush_esc(Plat *p) {
   if (p->in_n != 1 || p->inbuf[0] != 0x1b) return;
   fd.fd = STDIN_FILENO;
   fd.events = POLLIN;
-  /* wait briefly for CSI/SS3 tail (F1 = ESC O P) */
-  if (poll(&fd, 1, 120) > 0) {
+  /* wait for CSI/SS3/Linux F-key tail (ESC [ [ A etc.) */
+  if (poll(&fd, 1, 250) > 0) {
     n = read(STDIN_FILENO, buf, sizeof buf);
     if (n > 0) ingest(p, buf, (int)n);
     return;
@@ -452,11 +498,13 @@ Plat *plat_create(const char *title, int w, int h) {
   }
   if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
     free(p->cells);
+    free(p->prev);
     free(p);
     return NULL;
   }
   if (tcgetattr(STDIN_FILENO, &p->saved) != 0) {
     free(p->cells);
+    free(p->prev);
     free(p);
     return NULL;
   }
@@ -464,8 +512,11 @@ Plat *plat_create(const char *title, int w, int h) {
   cfmakeraw(&t);
   t.c_cc[VMIN] = 0;
   t.c_cc[VTIME] = 0;
+  /* Ensure Ctrl+S/Q are not eaten by software flow control. */
+  t.c_iflag &= ~((tcflag_t)(IXON | IXOFF | IXANY));
   if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &t) != 0) {
     free(p->cells);
+    free(p->prev);
     free(p);
     return NULL;
   }
@@ -480,12 +531,20 @@ Plat *plat_create(const char *title, int w, int h) {
 void plat_destroy(Plat *p) {
   if (!p) return;
   if (p->raw) {
-    fputs("\033[?2004l\033[?25h\033[?1049l", stdout);
+    /* Leave a clean TTY: Linux VT often ignores alt-screen, so always clear. */
+    fputs("\033[?2004l"
+          "\033[?25h"
+          "\033[0m"
+          "\033[?1049l"
+          "\033[2J"
+          "\033[H",
+          stdout);
     fflush(stdout);
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &p->saved);
   }
   free(p->clip);
   free(p->cells);
+  free(p->prev);
   free(p);
 }
 
@@ -620,11 +679,25 @@ void plat_end_frame(Plat *p) {
     }
   }
 
-  /* Hide cursor; paint full grid. Erase to EOL so a wider TTY never shows a
-   * short status strip. Use 24-bit SGR only when the terminal actually supports it. */
-  fputs("\033[?25l\033[H", stdout);
+  /* Row-diff paint: rewrite only changed rows (cuts status flicker on VTs). */
+  fputs("\033[?25l", stdout);
   for (y = 0; y < p->rows; y++) {
-    if (y > 0) printf("\033[%d;1H", y + 1);
+    int dirty = 0;
+    for (x = 0; x < p->cols; x++) {
+      Cell cur = p->cells[idx(p, x, y)];
+      Cell old = p->prev[idx(p, x, y)];
+      if (p->caret_on && x == p->caret_x && y == p->caret_y) {
+        mote_u32 t = cur.fg;
+        cur.fg = cur.bg;
+        cur.bg = t;
+      }
+      if (cur.cp != old.cp || cur.fg != old.fg || cur.bg != old.bg) {
+        dirty = 1;
+        break;
+      }
+    }
+    if (!dirty) continue;
+    printf("\033[%d;1H", y + 1);
     lfg = 0xffffffffu;
     lbg = 0xffffffffu;
     for (x = 0; x < p->cols; x++) {
@@ -648,11 +721,15 @@ void plat_end_frame(Plat *p) {
       un = utf8_encode(cp, u);
       if (un > 0) fwrite(u, 1, (size_t)un, stdout);
       else fputc('?', stdout);
+      {
+        Cell *o = &p->prev[idx(p, x, y)];
+        o->cp = cp;
+        o->fg = fg;
+        o->bg = bg;
+      }
     }
-    /* Clear any leftover columns if the host TTY is wider than our grid. */
     fputs("\033[K", stdout);
   }
-  fputs("\033[0m", stdout);
   fflush(stdout);
 }
 
