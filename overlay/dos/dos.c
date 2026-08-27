@@ -139,7 +139,11 @@ static unsigned char nearest_vga(mote_u32 rgb) {
 }
 
 static unsigned char make_attr(mote_u32 fg, mote_u32 bg) {
-  return (unsigned char)((nearest_vga(bg) << 4) | (nearest_vga(fg) & 0x0f));
+  unsigned char f = nearest_vga(fg) & 0x0f;
+  /* VGA attribute bit7 is BLINK unless bright-bg mode sticks. Never put
+   * indices 8..15 in the background nibble — that was the dark-theme flash. */
+  unsigned char b = nearest_vga(bg) & 0x07;
+  return (unsigned char)((b << 4) | f);
 }
 
 static int idx(Plat *p, int x, int y) { return y * p->cols + x; }
@@ -216,8 +220,24 @@ static void text_add(Plat *p, const char *s, int n) {
   }
 }
 
+static void key_trace(int raw, const char *action) {
+  FILE *f;
+  if (!getenv("MOTE_KEYTRACE")) return;
+  f = fopen("KEYTRACE.LOG", "a");
+  if (!f) return;
+  fprintf(f, "raw=%d action=%s\n", raw, action ? action : "?");
+  fclose(f);
+}
+
 static void key_flush(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
   text_flush(p);
+  if (getenv("MOTE_KEYTRACE")) {
+    FILE *f = fopen("KEYTRACE.LOG", "a");
+    if (f) {
+      fprintf(f, "platkey=%d ctrl=%d shift=%d\n", (int)k, (int)ctrl, (int)shift);
+      fclose(f);
+    }
+  }
   key(p, k, ctrl, shift);
 }
 
@@ -260,7 +280,8 @@ static void ctrl_key(Plat *p, int c, mote_bool shift) {
 static void ingest_key(Plat *p, int k) {
   /* DJGPP getkey(): 8=BS, 9=Tab, 13=Enter, 27=Esc must beat Ctrl+A..Z
    * (ASCII 1..26), because BS is also Ctrl+H (=8). */
-  if (k == 8 || k == 127) {
+  if (k == 8 || k == 127 || k == K_BackSpace || k == K_Control_Backspace) {
+    key_trace(k, "backspace");
     key_flush(p, PK_BACKSPACE, MOTE_FALSE, MOTE_FALSE);
     return;
   }
@@ -328,7 +349,7 @@ static void set_text_mode(void) {
    * bg index >= 8 makes the whole cell flash — dark theme hit this. */
   memset(&r, 0, sizeof r);
   r.x.ax = 0x1003;
-  r.h.bl = 0;
+  r.x.bx = 0; /* BH=0 BL=0: bright background, disable blink */
   __dpmi_int(0x10, &r);
   hide_hw_cursor();
 }
@@ -354,7 +375,7 @@ static void vga_load_cp866_font(void) {
   /* Font load can restore blink; re-enable bright backgrounds. */
   memset(&r, 0, sizeof r);
   r.x.ax = 0x1003;
-  r.h.bl = 0;
+  r.x.bx = 0; /* BH=0 BL=0: bright background, disable blink */
   __dpmi_int(0x10, &r);
   hide_hw_cursor();
 }
@@ -496,9 +517,13 @@ void plat_end_frame(Plat *p) {
       Cell *pr = &p->prev[idx(p, x, y)];
       unsigned char ch = c->ch ? c->ch : ' ';
       unsigned char attr = c->attr;
-      if (p->caret_on && x == p->caret_x && y == p->caret_y)
-        attr = (unsigned char)((attr >> 4) | ((attr & 0x0f) << 4));
-      if (pr->ch != ch || pr->attr != attr) {
+  if (p->caret_on && x == p->caret_x && y == p->caret_y) {
+    /* Reverse video; keep both nibbles in 0..7 so bit7 never blinks. */
+    unsigned char f = attr & 0x07;
+    unsigned char b = (attr >> 4) & 0x07;
+    attr = (unsigned char)((f << 4) | b);
+    if (f == b) attr ^= 0x77;
+  }      if (pr->ch != ch || pr->attr != attr) {
         poke_cell(p, x, y, ch, attr);
         pr->ch = ch;
         pr->attr = attr;
