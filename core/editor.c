@@ -1879,10 +1879,11 @@ void ed_draw(Editor *e, Plat *p) {
   size_t cvr, cvc, top;
   static const char *help[] = {
       "mote  F1/Alt+H help  Esc",
-      "File  ^S ^O ^Q  F5  ^N  ^W  S-W  ^E  ^Tab",
-      "Edit  ^Z/^Y  ^F F3  ^R  ^G  ^D  ^]  S-K  Tab",
+      "File  ^S Alt+S ^O ^Q  F5  ^N  ^W  ^F4/S-W  ^E  F2/^Tab",
+      "Edit  ^Z/^Y  ^F F3/S-F3  ^R  ^G  ^D  ^]  Alt+K  Tab",
       "Clip  ^X/^C/^V/^A",
-      "View  ^T  F7  ^=/^-/^0  S-R  S-E",
+      "View  ^T  F7  ^=/^-/^0  Alt+R  Alt+E",
+      "Find  Alt+C case  Alt+W word",
       "Ask   ^S confirm  ^Q discard  Esc",
   };
   plat_get_size(p, &w, &h);
