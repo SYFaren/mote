@@ -18,10 +18,16 @@ struct Plat {
   int cols, rows, font_px, caret_x, caret_y, q_n, text_n;
   mote_bool caret_on, vt;
   DWORD in_mode_saved, out_mode_saved;
+  UINT in_cp_saved, out_cp_saved;
   Cell *cells;
+  Cell *prev; /* last painted (caret applied) — skip unchanged rows */
   CHAR_INFO *outbuf;
   char *clip;
   size_t clip_n;
+  char *vtbuf;
+  size_t vtbuf_n, vtbuf_cap;
+  wchar_t *wtmp;
+  int wtmp_cap;
   char text_acc[32];
   PlatEvent q[256];
 };
@@ -110,27 +116,37 @@ static void sync_host_window(Plat *p) {
 static int idx(Plat *p, int x, int y) { return y * p->cols + x; }
 
 static mote_bool resize(Plat *p, int cols, int rows) {
-  Cell *c;
+  Cell *c, *prev;
   CHAR_INFO *o;
-  size_t n;
+  size_t n, i;
   if (cols < 40) cols = 40;
   if (rows < 10) rows = 10;
   if (cols > 300) cols = 300;
   if (rows > 120) rows = 120;
   n = (size_t)cols * (size_t)rows;
   c = (Cell *)calloc(n, sizeof(Cell));
+  prev = (Cell *)calloc(n, sizeof(Cell));
   o = (CHAR_INFO *)calloc(n, sizeof(CHAR_INFO));
-  if (!c || !o) {
+  if (!c || !prev || !o) {
     free(c);
+    free(prev);
     free(o);
     return MOTE_FALSE;
   }
   free(p->cells);
+  free(p->prev);
   free(p->outbuf);
   p->cells = c;
+  p->prev = prev;
   p->outbuf = o;
   p->cols = cols;
   p->rows = rows;
+  /* Force full repaint after resize. */
+  for (i = 0; i < n; i++) {
+    p->prev[i].cp = (mote_u32)~0u;
+    p->prev[i].fg = 0;
+    p->prev[i].bg = 0;
+  }
   sync_host_window(p);
   return MOTE_TRUE;
 }
@@ -316,6 +332,27 @@ static int running_on_wine(void) {
   return nt && GetProcAddress(nt, "wine_get_version") != NULL;
 }
 
+/* Raster OEM fonts lack Cyrillic; prefer a TrueType face with BMP coverage. */
+static void prefer_unicode_font(HANDLE hout) {
+  CONSOLE_FONT_INFOEX fi, set;
+  static const wchar_t *names[] = {L"Cascadia Mono", L"Consolas",
+                                   L"Lucida Console", L"Courier New", NULL};
+  int i;
+  memset(&fi, 0, sizeof fi);
+  fi.cbSize = sizeof fi;
+  if (!GetCurrentConsoleFontEx(hout, FALSE, &fi)) return;
+  for (i = 0; names[i]; i++) {
+    set = fi;
+    memset(set.FaceName, 0, sizeof set.FaceName);
+    {
+      const wchar_t *s = names[i];
+      int j;
+      for (j = 0; j < LF_FACESIZE - 1 && s[j]; j++) set.FaceName[j] = s[j];
+    }
+    if (SetCurrentConsoleFontEx(hout, FALSE, &set)) return;
+  }
+}
+
 /* Optional: dump cell grid for gallery (MOTE_DUMP_CELLS=path.cells). */
 static void dump_cells_file(Plat *p) {
   const char *path;
@@ -365,28 +402,39 @@ Plat *plat_create(const char *title, int w, int h) {
   }
   GetConsoleMode(p->hin, &p->in_mode_saved);
   GetConsoleMode(p->hout, &p->out_mode_saved);
+  p->in_cp_saved = GetConsoleCP();
+  p->out_cp_saved = GetConsoleOutputCP();
+  prefer_unicode_font(p->hout);
   im = p->in_mode_saved;
   im &= ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
   im |= ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT;
   SetConsoleMode(p->hin, im);
   om = p->out_mode_saved;
   om |= ENABLE_PROCESSED_OUTPUT;
+  /*
+   * VT truecolor is slow (escape storm, esp. with whitespace dots) and often
+   * mangled Cyrillic via WriteConsole. Default: CHAR_INFO + WriteConsoleOutputW.
+   * Opt in: MOTE_VT=1
+   */
+  p->vt = MOTE_FALSE;
 #ifdef ENABLE_VIRTUAL_TERMINAL_PROCESSING
-  /* Wine often advertises VT but prints escapes as literal text — skip it. */
-  if (!running_on_wine())
+  if (!running_on_wine() && getenv("MOTE_VT") && getenv("MOTE_VT")[0] == '1') {
     om |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    SetConsoleMode(p->hout, om);
+    {
+      DWORD m = 0;
+      if (GetConsoleMode(p->hout, &m) && (m & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+        p->vt = MOTE_TRUE;
+        SetConsoleCP(CP_UTF8);
+        SetConsoleOutputCP(CP_UTF8);
+      }
+    }
+  } else
 #endif
-  SetConsoleMode(p->hout, om);
   {
-    DWORD m = 0;
-    p->vt = MOTE_FALSE;
-#ifdef ENABLE_VIRTUAL_TERMINAL_PROCESSING
-    if (!running_on_wine() && GetConsoleMode(p->hout, &m) &&
-        (m & ENABLE_VIRTUAL_TERMINAL_PROCESSING))
-      p->vt = MOTE_TRUE;
-#endif
-    if (getenv("MOTE_NO_VT")) p->vt = MOTE_FALSE;
+    SetConsoleMode(p->hout, om);
   }
+  if (getenv("MOTE_NO_VT")) p->vt = MOTE_FALSE;
   if (title && title[0]) {
     wchar_t wt[128];
     MultiByteToWideChar(CP_UTF8, 0, title, -1, wt, 128);
@@ -409,9 +457,14 @@ void plat_destroy(Plat *p) {
   if (!p) return;
   SetConsoleMode(p->hin, p->in_mode_saved);
   SetConsoleMode(p->hout, p->out_mode_saved);
+  if (p->in_cp_saved) SetConsoleCP(p->in_cp_saved);
+  if (p->out_cp_saved) SetConsoleOutputCP(p->out_cp_saved);
   free(p->clip);
   free(p->cells);
+  free(p->prev);
   free(p->outbuf);
+  free(p->vtbuf);
+  free(p->wtmp);
   free(p);
 }
 
@@ -505,16 +558,82 @@ void plat_draw_text(Plat *p, int x, int y, const char *s, int n, mote_u32 rgb) {
 }
 
 static void vt_write(Plat *p, const char *s, size_t n) {
-  DWORD w = 0;
   if (n == 0) return;
-  WriteFile(p->hout, s, (DWORD)n, &w, NULL);
+  if (p->vtbuf_n + n > p->vtbuf_cap) {
+    size_t nc = p->vtbuf_cap ? p->vtbuf_cap * 2 : 16384;
+    char *nb;
+    while (nc < p->vtbuf_n + n) nc *= 2;
+    nb = (char *)realloc(p->vtbuf, nc);
+    if (!nb) return;
+    p->vtbuf = nb;
+    p->vtbuf_cap = nc;
+  }
+  memcpy(p->vtbuf + p->vtbuf_n, s, n);
+  p->vtbuf_n += n;
+}
+
+/* UTF-8 → UTF-16 via WriteConsoleW: reliable Cyrillic with VT enabled. */
+static void vt_flush(Plat *p) {
+  int wn;
+  DWORD written = 0;
+  if (!p->vtbuf_n) return;
+  wn = MultiByteToWideChar(CP_UTF8, 0, p->vtbuf, (int)p->vtbuf_n, NULL, 0);
+  if (wn <= 0) {
+    p->vtbuf_n = 0;
+    return;
+  }
+  if (wn > p->wtmp_cap) {
+    wchar_t *nw = (wchar_t *)realloc(p->wtmp, (size_t)wn * sizeof(wchar_t));
+    if (!nw) {
+      p->vtbuf_n = 0;
+      return;
+    }
+    p->wtmp = nw;
+    p->wtmp_cap = wn;
+  }
+  MultiByteToWideChar(CP_UTF8, 0, p->vtbuf, (int)p->vtbuf_n, p->wtmp, wn);
+  WriteConsoleW(p->hout, p->wtmp, (DWORD)wn, &written, NULL);
+  p->vtbuf_n = 0;
+}
+
+static void cell_paint(Plat *p, int x, int y, Cell *out) {
+  Cell *c = &p->cells[idx(p, x, y)];
+  out->cp = c->cp ? c->cp : (mote_u32)' ';
+  out->fg = c->fg;
+  out->bg = c->bg;
+  if (p->caret_on && x == p->caret_x && y == p->caret_y) {
+    mote_u32 t = out->fg;
+    out->fg = out->bg;
+    out->bg = t;
+  }
+}
+
+static int row_dirty(Plat *p, int y) {
+  int x;
+  for (x = 0; x < p->cols; x++) {
+    Cell cur;
+    Cell *old;
+    cell_paint(p, x, y, &cur);
+    old = &p->prev[idx(p, x, y)];
+    if (cur.cp != old->cp || cur.fg != old->fg || cur.bg != old->bg) return 1;
+  }
+  return 0;
+}
+
+static void row_commit(Plat *p, int y) {
+  int x;
+  for (x = 0; x < p->cols; x++) {
+    Cell cur;
+    cell_paint(p, x, y, &cur);
+    p->prev[idx(p, x, y)] = cur;
+  }
 }
 
 void plat_end_frame(Plat *p) {
   COORD bufSize, bufCoord;
   SMALL_RECT region;
   CONSOLE_SCREEN_BUFFER_INFO info;
-  int i, n = p->cols * p->rows;
+  int y, x;
   SHORT left = 0, top = 0;
 
   dump_cells_file(p);
@@ -524,66 +643,50 @@ void plat_end_frame(Plat *p) {
   }
 
   if (p->vt) {
-    /* Truecolor ANSI — paints the visible console incl. last-row status. */
     char esc[64];
-    int y, x;
-    mote_u32 lfg = ~0ul, lbg = ~0ul;
-    vt_write(p, "\033[?25l\033[H", 9);
+    int any = 0;
+    p->vtbuf_n = 0;
+    vt_write(p, "\033[?25l", 6);
     for (y = 0; y < p->rows; y++) {
-      if (y > 0) {
+      mote_u32 lfg = ~0ul, lbg = ~0ul;
+      if (!row_dirty(p, y)) continue;
+      any = 1;
+      {
         int el = snprintf(esc, sizeof esc, "\033[%d;1H", y + 1);
         if (el > 0) vt_write(p, esc, (size_t)el);
       }
       for (x = 0; x < p->cols; x++) {
-        Cell *c = &p->cells[idx(p, x, y)];
-        mote_u32 fg = c->fg, bg = c->bg, cp = c->cp ? c->cp : (mote_u32)' ';
+        Cell cur;
         char u[8];
         int un, el;
-        if (p->caret_on && x == p->caret_x && y == p->caret_y) {
-          mote_u32 t = fg;
-          fg = bg;
-          bg = t;
-        }
-        if (fg != lfg) {
+        cell_paint(p, x, y, &cur);
+        if (cur.fg != lfg) {
           el = snprintf(esc, sizeof esc, "\033[38;2;%lu;%lu;%lum",
-                             (unsigned long)((fg >> 16) & 255),
-                             (unsigned long)((fg >> 8) & 255),
-                             (unsigned long)(fg & 255));
+                        (unsigned long)((cur.fg >> 16) & 255),
+                        (unsigned long)((cur.fg >> 8) & 255),
+                        (unsigned long)(cur.fg & 255));
           if (el > 0) vt_write(p, esc, (size_t)el);
-          lfg = fg;
+          lfg = cur.fg;
         }
-        if (bg != lbg) {
+        if (cur.bg != lbg) {
           el = snprintf(esc, sizeof esc, "\033[48;2;%lu;%lu;%lum",
-                             (unsigned long)((bg >> 16) & 255),
-                             (unsigned long)((bg >> 8) & 255),
-                             (unsigned long)(bg & 255));
+                        (unsigned long)((cur.bg >> 16) & 255),
+                        (unsigned long)((cur.bg >> 8) & 255),
+                        (unsigned long)(cur.bg & 255));
           if (el > 0) vt_write(p, esc, (size_t)el);
-          lbg = bg;
+          lbg = cur.bg;
         }
-        un = utf8_encode(cp, u);
+        un = utf8_encode(cur.cp, u);
         if (un > 0) vt_write(p, u, (size_t)un);
         else vt_write(p, "?", 1);
       }
+      row_commit(p, y);
     }
-    vt_write(p, "\033[0m", 4);
+    if (any) vt_write(p, "\033[0m", 4);
+    vt_flush(p);
     return;
   }
 
-  for (i = 0; i < n; i++) {
-    Cell *c = &p->cells[i];
-    WCHAR wch;
-    WORD attr = nearest_attr_fg(c->fg) | nearest_attr_bg(c->bg);
-    if (p->caret_on && (i % p->cols) == p->caret_x && (i / p->cols) == p->caret_y)
-      attr = (WORD)(((attr & 0x0F) << 4) | ((attr & 0xF0) >> 4));
-    if (c->cp < 128)
-      wch = (WCHAR)c->cp;
-    else if (c->cp <= 0xFFFF)
-      wch = (WCHAR)c->cp;
-    else
-      wch = L'?';
-    p->outbuf[i].Char.UnicodeChar = wch;
-    p->outbuf[i].Attributes = attr;
-  }
   if (GetConsoleScreenBufferInfo(p->hout, &info)) {
     left = info.srWindow.Left;
     top = info.srWindow.Top;
@@ -594,15 +697,36 @@ void plat_end_frame(Plat *p) {
       top = 0;
     }
   }
-  bufSize.X = (SHORT)p->cols;
-  bufSize.Y = (SHORT)p->rows;
-  bufCoord.X = 0;
-  bufCoord.Y = 0;
-  region.Left = left;
-  region.Top = top;
-  region.Right = (SHORT)(left + p->cols - 1);
-  region.Bottom = (SHORT)(top + p->rows - 1);
-  WriteConsoleOutputW(p->hout, p->outbuf, bufSize, bufCoord, &region);
+
+  /* Dirty-row WriteConsoleOutputW — Unicode BMP (Cyrillic) intact. */
+  for (y = 0; y < p->rows; y++) {
+    CHAR_INFO *row;
+    if (!row_dirty(p, y)) continue;
+    row = &p->outbuf[idx(p, 0, y)];
+    for (x = 0; x < p->cols; x++) {
+      Cell cur;
+      WCHAR wch;
+      WORD attr;
+      cell_paint(p, x, y, &cur);
+      attr = nearest_attr_fg(cur.fg) | nearest_attr_bg(cur.bg);
+      if (cur.cp <= 0xFFFF)
+        wch = (WCHAR)cur.cp;
+      else
+        wch = L'?';
+      row[x].Char.UnicodeChar = wch;
+      row[x].Attributes = attr;
+    }
+    bufSize.X = (SHORT)p->cols;
+    bufSize.Y = 1;
+    bufCoord.X = 0;
+    bufCoord.Y = 0;
+    region.Left = left;
+    region.Top = (SHORT)(top + y);
+    region.Right = (SHORT)(left + p->cols - 1);
+    region.Bottom = (SHORT)(top + y);
+    WriteConsoleOutputW(p->hout, row, bufSize, bufCoord, &region);
+    row_commit(p, y);
+  }
 }
 
 void plat_set_title(Plat *p, const char *title) {

@@ -33,13 +33,10 @@ int main(int argc, char **argv) {
   MoteCfg cfg;
   const char *files[MAX_DOCS];
   int nfiles = 0, i, start_help = 0;
+  /* Cell geometry: only -g locks; never reuse shared win_w/h (GUI pixels). */
+  int cell_w = 0, cell_h = 0;
 
   cfg_load(&cfg);
-  /* console: geometry is cells; keep a sane default if GUI size was saved */
-  if (cfg.win_w > 512 || cfg.win_h > 256 || cfg.win_w < 40 || cfg.win_h < 10) {
-    cfg.win_w = 0;
-    cfg.win_h = 0;
-  }
 
   for (i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -51,7 +48,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     if (strcmp(argv[i], "-g") == 0 || strcmp(argv[i], "--geometry") == 0) {
-      if (i + 1 >= argc || parse_geom(argv[++i], &cfg.win_w, &cfg.win_h) != 0) {
+      if (i + 1 >= argc || parse_geom(argv[++i], &cell_w, &cell_h) != 0) {
         fprintf(stderr, "%s: bad -g, use COLSxROWS\n", MOTE_NAME);
         return 1;
       }
@@ -69,7 +66,7 @@ int main(int argc, char **argv) {
     if (nfiles < MAX_DOCS) files[nfiles++] = argv[i];
   }
 
-  plat = plat_create(MOTE_NAME, cfg.win_w, cfg.win_h);
+  plat = plat_create(MOTE_NAME, cell_w, cell_h);
   if (!plat) {
     fprintf(stderr, "%s: need a TTY (stdin/stdout)\n", MOTE_NAME);
     return 1;
@@ -117,7 +114,7 @@ int main(int argc, char **argv) {
     if (ed.need_draw) ed_draw(&ed, plat);
   }
 
-  plat_get_size(plat, &cfg.win_w, &cfg.win_h);
+  /* Keep GUI win_w/h; cell size must not overwrite pixel geometry. */
   cfg.theme_id = ed.theme_id;
   cfg.font_px = plat_font_px(plat);
   cfg.wrap = ed.wrap;

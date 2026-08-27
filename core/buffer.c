@@ -1,6 +1,7 @@
 /* mote core — buffer.c */
 #include "buffer.h"
 #include "platform.h"
+#include "utf8.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -168,6 +169,76 @@ char *buf_strdup(const Buf *b) {
   return s;
 }
 
+/* CP1251 → Unicode (Windows Russian ANSI). */
+static mote_u32 cp1251_u(unsigned char c) {
+  static const mote_u32 map_80_bf[64] = {
+      0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021, 0x20AC,
+      0x2030, 0x0409, 0x2039, 0x040A, 0x040C, 0x040B, 0x040F, 0x0452, 0x2018,
+      0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x0098, 0x2122, 0x0459,
+      0x203A, 0x045A, 0x045C, 0x045B, 0x045F, 0x00A0, 0x040E, 0x045E, 0x0408,
+      0x00A4, 0x0490, 0x00A6, 0x00A7, 0x0401, 0x00A9, 0x0404, 0x00AB, 0x00AC,
+      0x00AD, 0x00AE, 0x0407, 0x00B0, 0x00B1, 0x0406, 0x0456, 0x0491, 0x00B5,
+      0x00B6, 0x00B7, 0x0451, 0x2116, 0x0454, 0x00BB, 0x0458, 0x0405, 0x0455,
+      0x0457};
+  if (c < 0x80) return c;
+  if (c >= 0xC0) return (mote_u32)(0x0410 + (c - 0xC0)); /* А-я */
+  return map_80_bf[c - 0x80];
+}
+
+static int bytes_are_utf8(const char *s, size_t n) {
+  size_t i = 0;
+  while (i < n) {
+    mote_u32 cp;
+    int len = utf8_decode(s + i, n - i, &cp);
+    if (len <= 0 || cp == 0xFFFDu) return 0;
+    i += (size_t)len;
+  }
+  return 1;
+}
+
+/* If file is CP1251 (common on Windows), rewrite gap buffer as UTF-8. */
+static mote_bool ensure_utf8_text(Buf *b) {
+  size_t len = buf_len(b), i, out_n = 0, capa;
+  char *tmp, *src;
+  int has_hi = 0;
+  if (!len || !b->data) return MOTE_TRUE;
+  move_gap(b, len); /* contiguous at start */
+  src = b->data;
+  for (i = 0; i < len; i++) {
+    if ((unsigned char)src[i] >= 0x80) {
+      has_hi = 1;
+      break;
+    }
+  }
+  if (!has_hi) return MOTE_TRUE;
+  if (bytes_are_utf8(src, len)) return MOTE_TRUE;
+  /* Worst case: every byte → 3-byte UTF-8 */
+  capa = len * 3 + 1;
+  tmp = (char *)malloc(capa);
+  if (!tmp) return MOTE_FALSE;
+  for (i = 0; i < len; i++) {
+    char u[4];
+    int un = utf8_encode(cp1251_u((unsigned char)src[i]), u);
+    if (un <= 0) continue;
+    if (out_n + (size_t)un > capa) {
+      free(tmp);
+      return MOTE_FALSE;
+    }
+    memcpy(tmp + out_n, u, (size_t)un);
+    out_n += (size_t)un;
+  }
+  buf_free(b);
+  if (!buf_init(b, out_n)) {
+    free(tmp);
+    return MOTE_FALSE;
+  }
+  memcpy(b->data, tmp, out_n);
+  b->gap_start = out_n;
+  b->gap_end = b->capa;
+  free(tmp);
+  return MOTE_TRUE;
+}
+
 mote_bool buf_load(Buf *b, const char *path) {
   FILE *f;
   long sz;
@@ -196,8 +267,18 @@ mote_bool buf_load(Buf *b, const char *path) {
     buf_free(b);
     return MOTE_FALSE;
   }
-  b->gap_start = (size_t)sz;
+  /* Strip UTF-8 BOM */
+  if (n >= 3 && (unsigned char)b->data[0] == 0xEF &&
+      (unsigned char)b->data[1] == 0xBB && (unsigned char)b->data[2] == 0xBF) {
+    memmove(b->data, b->data + 3, n - 3);
+    n -= 3;
+  }
+  b->gap_start = n;
   b->gap_end = b->capa;
+  if (!ensure_utf8_text(b)) {
+    buf_free(b);
+    return MOTE_FALSE;
+  }
   return MOTE_TRUE;
 }
 

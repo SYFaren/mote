@@ -11,13 +11,17 @@
 #include <termios.h>
 #include <unistd.h>
 
+#ifdef __linux__
+#include <linux/kd.h>
+#endif
+
 typedef struct {
   mote_u32 cp, fg, bg;
 } Cell;
 
 struct Plat {
   int cols, rows, font_px, caret_x, caret_y, in_n, q_n, text_n;
-  mote_bool caret_on, raw, paste;
+  mote_bool caret_on, raw, paste, utf8, hw_caret;
   int color_mode; /* 0=16 1=256 2=truecolor */
   mote_bool geom_locked;
   Cell *cells;
@@ -27,6 +31,10 @@ struct Plat {
   struct termios saved;
   char inbuf[64];
   char text_acc[32];
+  unsigned char utf8_hold[4];
+  int utf8_hold_n;
+  int kbmode_saved;
+  mote_bool kbmode_set;
   PlatEvent q[256];
 };
 
@@ -93,6 +101,35 @@ static int detect_color_mode(void) {
       !strcmp(term, "vt100") || !strcmp(term, "vt102") || !strcmp(term, "ansi"))
     return 0;
   if (strstr(term, "-direct") || strstr(term, "truecolor")) return 2;
+  return 1;
+}
+
+/* Prefer UTF-8 on modern Linux VTs; MOTE_NO_UTF8 forces byte/meta path. */
+static int detect_utf8_console(void) {
+  const char *e;
+  FILE *f;
+  int v;
+  e = getenv("MOTE_NO_UTF8");
+  if (e && e[0] && e[0] != '0') return 0;
+  e = getenv("MOTE_UTF8");
+  if (e && e[0] && e[0] != '0') return 1;
+  e = getenv("LC_ALL");
+  if (!e || !e[0]) e = getenv("LC_CTYPE");
+  if (!e || !e[0]) e = getenv("LANG");
+  if (e && (strstr(e, "UTF-8") || strstr(e, "utf8") || strstr(e, "UTF8")))
+    return 1;
+  f = fopen("/sys/module/vt/parameters/default_utf8", "r");
+  if (f) {
+    v = 1;
+    if (fscanf(f, "%d", &v) == 1) {
+      fclose(f);
+      return v != 0;
+    }
+    fclose(f);
+  }
+  e = getenv("TERM");
+  if (e && strcmp(e, "linux") && strcmp(e, "console") && strcmp(e, "dumb"))
+    return 1;
   return 1;
 }
 
@@ -375,6 +412,57 @@ static int finish_esc(Plat *p) {
   return 1;
 }
 
+static void text_utf8_cp(Plat *p, mote_u32 cp) {
+  char u[4];
+  int n = utf8_encode(cp, u);
+  if (n > 0) text_add(p, u, n);
+}
+
+static int utf8_seq_len(unsigned char c) {
+  if (c < 0x80) return 1;
+  if ((c & 0xE0) == 0xC0) return 2;
+  if ((c & 0xF0) == 0xE0) return 3;
+  if ((c & 0xF8) == 0xF0) return 4;
+  return 0;
+}
+
+/* Assemble UTF-8 across read() boundaries; emit complete codepoints as text. */
+static void feed_utf8_byte(Plat *p, unsigned char c) {
+  int need;
+  mote_u32 cp;
+  int len;
+  if (p->utf8_hold_n == 0) {
+    need = utf8_seq_len(c);
+    if (need <= 1) {
+      if (c < 0x80)
+        text_add(p, (const char *)&c, 1);
+      else if (!p->utf8) {
+        /* Legacy VT: single high byte (KOI8/CP866) → Unicode via Latin-1 slot */
+        text_utf8_cp(p, (mote_u32)c);
+      } else {
+        /* Unexpected lone continuation — skip */
+      }
+      return;
+    }
+    p->utf8_hold[0] = c;
+    p->utf8_hold_n = 1;
+    return;
+  }
+  if ((c & 0xC0) != 0x80) {
+    /* Broken sequence — drop hold, re-parse c */
+    p->utf8_hold_n = 0;
+    feed_utf8_byte(p, c);
+    return;
+  }
+  p->utf8_hold[p->utf8_hold_n++] = c;
+  need = utf8_seq_len(p->utf8_hold[0]);
+  if (p->utf8_hold_n < need) return;
+  len = utf8_decode((const char *)p->utf8_hold, (size_t)p->utf8_hold_n, &cp);
+  p->utf8_hold_n = 0;
+  if (len > 0 && cp != 0xFFFDu)
+    text_utf8_cp(p, cp);
+}
+
 static void ingest(Plat *p, const unsigned char *buf, int n) {
   int i;
   int burst = p->paste || n > 2;
@@ -382,6 +470,7 @@ static void ingest(Plat *p, const unsigned char *buf, int n) {
     unsigned char c = buf[i];
 
     if (p->in_n || c == 0x1b) {
+      p->utf8_hold_n = 0;
       if (p->in_n < (int)sizeof p->inbuf - 1)
         p->inbuf[p->in_n++] = (char)c;
       else
@@ -391,15 +480,29 @@ static void ingest(Plat *p, const unsigned char *buf, int n) {
       continue;
     }
 
-    /* Linux VT Meta/Alt often sets high bit instead of ESC-prefix. */
+    /*
+     * High bytes: in UTF-8 mode always assemble UTF-8 (Cyrillic). Meta-bit Alt
+     * (legacy Linux VT) only when UTF-8 is off — otherwise D0/D1 become Alt+P.
+     */
     if (c >= 0x80) {
-      unsigned char ch = (unsigned char)(c & 0x7f);
-      if (ch >= 1 && ch <= 26) {
-        ctrl_key(p, 'a' + (int)ch - 1, MOTE_FALSE);
-      } else if (ch >= 32 && ch != 0x7f) {
-        alt_letter(p, (char)ch);
+      if (p->utf8 || p->utf8_hold_n > 0) {
+        feed_utf8_byte(p, c);
+        continue;
+      }
+      {
+        unsigned char ch = (unsigned char)(c & 0x7f);
+        if (ch >= 1 && ch <= 26) {
+          ctrl_key(p, 'a' + (int)ch - 1, MOTE_FALSE);
+        } else if (ch >= 32 && ch != 0x7f) {
+          alt_letter(p, (char)ch);
+        }
       }
       continue;
+    }
+
+    if (p->utf8_hold_n > 0) {
+      /* ASCII interrupts incomplete UTF-8 */
+      p->utf8_hold_n = 0;
     }
 
     if (c == 0x7f || c == 0x08) {
@@ -428,17 +531,7 @@ static void ingest(Plat *p, const unsigned char *buf, int n) {
     }
     if (c < 32) continue;
 
-    {
-      char tmp[4];
-      int have = 1;
-      mote_u32 cp;
-      int len;
-      tmp[0] = (char)c;
-      while (have < 4 && i + 1 < n && (buf[i + 1] & 0xc0) == 0x80)
-        tmp[have++] = (char)buf[++i];
-      len = utf8_decode(tmp, (size_t)have, &cp);
-      if (len > 0) text_add(p, tmp, len);
-    }
+    feed_utf8_byte(p, c);
   }
 }
 
@@ -486,6 +579,9 @@ Plat *plat_create(const char *title, int w, int h) {
   if (!p) return NULL;
   p->font_px = 15;
   p->color_mode = detect_color_mode();
+  p->utf8 = detect_utf8_console() ? MOTE_TRUE : MOTE_FALSE;
+  /* Soft invert caret drifts on Linux VT when UTF-8 width mismatches; use HW. */
+  p->hw_caret = (p->color_mode == 0) ? MOTE_TRUE : MOTE_FALSE;
   tty_size(&cols, &rows);
   if (w >= 40 && w <= 512 && h >= 10 && h <= 256) {
     cols = w;
@@ -521,7 +617,17 @@ Plat *plat_create(const char *title, int w, int h) {
     return NULL;
   }
   p->raw = MOTE_TRUE;
+#ifdef __linux__
+  /* Keyboard UTF-8 so Cyrillic arrives as multi-byte, not 8-bit meta. */
+  if (p->utf8 && ioctl(STDIN_FILENO, KDGKBMODE, &p->kbmode_saved) == 0) {
+    if (ioctl(STDIN_FILENO, KDSKBMODE, K_UNICODE) == 0)
+      p->kbmode_set = MOTE_TRUE;
+  }
+#endif
   signal(SIGWINCH, on_winch);
+  /* ESC % G — select UTF-8 (Linux VT); without it Cyrillic is 2 cells + bad caret */
+  if (p->utf8)
+    fputs("\033%G", stdout);
   fputs("\033[?1049h\033[?2004h\033[?25l\033[2J\033[H", stdout);
   if (title && title[0]) printf("\033]0;%s\007", title);
   fflush(stdout);
@@ -531,11 +637,16 @@ Plat *plat_create(const char *title, int w, int h) {
 void plat_destroy(Plat *p) {
   if (!p) return;
   if (p->raw) {
+#ifdef __linux__
+    if (p->kbmode_set)
+      (void)ioctl(STDIN_FILENO, KDSKBMODE, p->kbmode_saved);
+#endif
     /* Leave a clean TTY: Linux VT often ignores alt-screen, so always clear. */
     fputs("\033[?2004l"
           "\033[?25h"
           "\033[0m"
           "\033[?1049l"
+          "\033%@"
           "\033[2J"
           "\033[H",
           stdout);
@@ -686,7 +797,8 @@ void plat_end_frame(Plat *p) {
     for (x = 0; x < p->cols; x++) {
       Cell cur = p->cells[idx(p, x, y)];
       Cell old = p->prev[idx(p, x, y)];
-      if (p->caret_on && x == p->caret_x && y == p->caret_y) {
+      /* Soft caret invert only when not using hardware cursor. */
+      if (!p->hw_caret && p->caret_on && x == p->caret_x && y == p->caret_y) {
         mote_u32 t = cur.fg;
         cur.fg = cur.bg;
         cur.bg = t;
@@ -705,7 +817,7 @@ void plat_end_frame(Plat *p) {
       mote_u32 fg = c->fg, bg = c->bg, cp = c->cp ? c->cp : (mote_u32)' ';
       char u[4];
       int un;
-      if (p->caret_on && x == p->caret_x && y == p->caret_y) {
+      if (!p->hw_caret && p->caret_on && x == p->caret_x && y == p->caret_y) {
         mote_u32 t = fg;
         fg = bg;
         bg = t;
@@ -730,6 +842,9 @@ void plat_end_frame(Plat *p) {
     }
     fputs("\033[K", stdout);
   }
+  if (p->hw_caret && p->caret_on && p->caret_x >= 0 && p->caret_y >= 0 &&
+      p->caret_x < p->cols && p->caret_y < p->rows)
+    printf("\033[%d;%dH\033[?25h", p->caret_y + 1, p->caret_x + 1);
   fflush(stdout);
 }
 

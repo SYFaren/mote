@@ -1854,8 +1854,14 @@ static void draw_range(Editor *e, Doc *d, Plat *p, size_t a, size_t b, int y,
       if (i == d->bracket_a || i == d->bracket_b) hk = HL_BRACKET;
       fg = hl_color(t, hk);
       if (e->show_ws && (cp == ' ' || cp == '\t')) {
-        const char *glyph = (cp == ' ') ? "\xC2\xB7" : "\xC2\xBB"; /* · » */
-        plat_draw_text(p, x, y, glyph, 2, t->gutter_fg);
+        /* Cell consoles: ASCII only — U+00B7/» break VT width and thrash redraw. */
+        char gch = (cp == ' ') ? '.' : '>';
+        if (e->cw > 1) {
+          const char *glyph = (cp == ' ') ? "\xC2\xB7" : "\xC2\xBB"; /* · » */
+          plat_draw_text(p, x, y, glyph, 2, t->gutter_fg);
+        } else {
+          plat_draw_text(p, x, y, &gch, 1, t->gutter_fg);
+        }
       } else if (cp != '\t') {
         enc = utf8_encode(cp, chs);
         plat_draw_text(p, x, y, chs, enc, fg);
