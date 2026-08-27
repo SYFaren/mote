@@ -275,10 +275,31 @@ void plat_destroy(Plat *p) {
 
 void plat_wait(Plat *p) {
   if (p->qn > 0) return;
+#ifdef __EMSCRIPTEN__
+  /* Do not block forever: the first CSS layout often lands after the
+   * initial ed_draw, and a blocking WaitEvent leaves a black canvas until
+   * the user clicks. Timeout + sync pushes PE_EXPOSE when size settles. */
+  {
+    PlatEvent e;
+    if (sync_em_canvas(p)) {
+      memset(&e, 0, sizeof e);
+      e.type = PE_EXPOSE;
+      qpush(p, &e);
+      return;
+    }
+    SDL_WaitEventTimeout(NULL, 32);
+    if (sync_em_canvas(p)) {
+      memset(&e, 0, sizeof e);
+      e.type = PE_EXPOSE;
+      qpush(p, &e);
+    }
+  }
+#else
 #if defined(MOTE_SDL3)
   SDL_WaitEvent(NULL);
 #else
   SDL_WaitEvent(NULL);
+#endif
 #endif
 }
 
@@ -444,20 +465,26 @@ void plat_end_frame(Plat *p) {
   if (!p->fb.px) return;
 #ifdef MOTE_SDL_RENDERER
   {
+    void *pixels;
+    int pitch;
     if (!p->tex) return;
-    /* Contiguous soft FB → one UpdateTexture (per-pixel lock was a bottleneck). */
-    if (SDL_UpdateTexture(p->tex, NULL, p->fb.px, p->fb.w * (int)sizeof(mote_u32)) != 0) {
-      void *pixels;
-      int pitch;
-      if (SDL_LockTexture(p->tex, NULL, &pixels, &pitch) == 0) {
-        int y;
-        for (y = 0; y < p->fb.h; y++) {
-          mote_u32 *src = p->fb.px + (size_t)y * (size_t)p->fb.w;
-          unsigned char *row = (unsigned char *)pixels + y * pitch;
-          memcpy(row, src, (size_t)p->fb.w * sizeof(mote_u32));
+    /* Lock + opaque alpha: Emscripten canvas treats A=0 as invisible, so a
+     * raw UpdateTexture of 0x00RRGGBB often shows a black page until redraw. */
+    if (SDL_LockTexture(p->tex, NULL, &pixels, &pitch) == 0) {
+      int y, x;
+      for (y = 0; y < p->fb.h; y++) {
+        mote_u32 *src = p->fb.px + (size_t)y * (size_t)p->fb.w;
+        mote_u32 *dst = (mote_u32 *)((unsigned char *)pixels + y * pitch);
+        if (pitch == p->fb.w * (int)sizeof(mote_u32)) {
+          for (x = 0; x < p->fb.w; x++) dst[x] = src[x] | 0xFF000000u;
+        } else {
+          for (x = 0; x < p->fb.w; x++) {
+            mote_u32 c = src[x] | 0xFF000000u;
+            memcpy((unsigned char *)pixels + y * pitch + x * 4, &c, 4);
+          }
         }
-        SDL_UnlockTexture(p->tex);
       }
+      SDL_UnlockTexture(p->tex);
     }
 #if defined(MOTE_SDL3)
     SDL_RenderTexture(p->ren, p->tex, NULL, NULL);

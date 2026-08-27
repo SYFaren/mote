@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 static void usage(void) {
   fprintf(stderr,
@@ -104,6 +107,11 @@ int main(int argc, char **argv) {
   }
 
   ed_draw(&ed, plat);
+#ifdef __EMSCRIPTEN__
+  /* First paint can race CSS layout; nudge a follow-up draw after yield. */
+  emscripten_sleep(0);
+  ed.need_draw = MOTE_TRUE;
+#endif
   while (!ed.want_quit) {
     PlatEvent ev;
     plat_wait(plat);
