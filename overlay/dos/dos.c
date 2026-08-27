@@ -103,8 +103,9 @@ static unsigned char nearest_vga(mote_u32 rgb) {
   int b = (int)(rgb & 255);
   int bri = r + g + b;
   /* Exact / near-exact theme anchors → fixed slots (see VGA16). */
-  if (r < 25 && g < 30 && b < 35) return 0;           /* bg */
-  if (bri > 40 && bri < 120 && r < 50 && g < 55 && b < 60) return 8; /* gutter */
+  if (r < 40 && g < 40 && b < 45) return 0;           /* editor / slate bg */
+  if (bri > 40 && bri < 140 && r < 55 && g < 60 && b < 70 && !(r < 40 && g < 40))
+    return 8; /* gutter / panel — only when not pure bg */
   if (r > 200 && g > 200 && b > 200) return 15;       /* white */
   if (r > 180 && g > 180 && b > 180) return 7;        /* fg */
   if (g > r + 20 && g > b + 10 && g > 100 && r < 160) {
@@ -257,11 +258,8 @@ static void ctrl_key(Plat *p, int c, mote_bool shift) {
 }
 
 static void ingest_key(Plat *p, int k) {
-  /* DJGPP getkey(): ASCII 1..26 = Ctrl+A..Z; 8=BS; 9=Tab; 13=Enter; 27=Esc */
-  if (k >= 1 && k <= 26) {
-    ctrl_key(p, 'a' + k - 1, MOTE_FALSE);
-    return;
-  }
+  /* DJGPP getkey(): 8=BS, 9=Tab, 13=Enter, 27=Esc must beat Ctrl+A..Z
+   * (ASCII 1..26), because BS is also Ctrl+H (=8). */
   if (k == 8 || k == 127) {
     key_flush(p, PK_BACKSPACE, MOTE_FALSE, MOTE_FALSE);
     return;
@@ -276,6 +274,10 @@ static void ingest_key(Plat *p, int k) {
   }
   if (k == 27) {
     key_flush(p, PK_ESCAPE, MOTE_FALSE, MOTE_FALSE);
+    return;
+  }
+  if (k >= 1 && k <= 26) {
+    ctrl_key(p, 'a' + k - 1, MOTE_FALSE);
     return;
   }
   if (k >= 32 && k < 127) {
@@ -322,6 +324,12 @@ static void set_text_mode(void) {
   memset(&r, 0, sizeof r);
   r.x.ax = 0x0003; /* 80x25 color text */
   __dpmi_int(0x10, &r);
+  /* Attribute bit7 = bright background (not blink). Without this, any
+   * bg index >= 8 makes the whole cell flash — dark theme hit this. */
+  memset(&r, 0, sizeof r);
+  r.x.ax = 0x1003;
+  r.h.bl = 0;
+  __dpmi_int(0x10, &r);
   hide_hw_cursor();
 }
 
@@ -343,6 +351,11 @@ static void vga_load_cp866_font(void) {
   r.x.bp = 0;
   __dpmi_int(0x10, &r);
   __dpmi_free_dos_memory(sel);
+  /* Font load can restore blink; re-enable bright backgrounds. */
+  memset(&r, 0, sizeof r);
+  r.x.ax = 0x1003;
+  r.h.bl = 0;
+  __dpmi_int(0x10, &r);
   hide_hw_cursor();
 }
 
