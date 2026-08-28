@@ -138,36 +138,19 @@ echo "  site URL: $SITE_URL"
 
 echo
 echo "=== 4/4  Release $TAG ==="
-NOTES="$(cat <<EOF
+NOTES_FILE="$MOTE_DIR/release-notes-${TAG}.md"
+if [ -f "$NOTES_FILE" ]; then
+  NOTES="$(cat "$NOTES_FILE")"
+else
+  NOTES="$(cat <<EOF
 ## mote $TAG
 
-Prefer **\`mote-all-platforms.zip\`** — binaries sorted by OS/backend:
+Prefer **\`mote-all-platforms.zip\`** — sorted by \`by-platform/<os>/<arch>/<backend>/\`.
 
-\`\`\`
-by-platform/linux/{x11,wayland,sdl2,console,fbdev}/
-by-platform/windows/{gui,console}/
-by-platform/dos/
-by-platform/web/wasm/
-\`\`\`
-
-Individual assets under \`flat/\` names are also attached for direct download.
-
-| Asset | Platform |
-|-------|----------|
-| \`mote-linux-x11\` | Linux X11 |
-| \`mote-linux-wayland\` | Linux Wayland |
-| \`mote-linux-sdl2\` | Linux SDL2 |
-| \`mote-linux-console\` | Unix TTY |
-| \`mote-linux-fbdev\` | Linux \`/dev/fb0\` |
-| \`mote-windows-gui.exe\` | Windows GUI |
-| \`mote-windows-console.exe\` | Windows console |
-| \`mote-dos.exe\` | FreeDOS / DOSBox |
-| \`mote-web.zip\` | WebAssembly (html+js+wasm+data) |
-| \`*.upx\` | UPX-packed variants |
-
-ANSI C89 core; overlay chosen at compile time.
+See \`docs/PLATFORMS.md\` for the full matrix. Site: https://syfaren.github.io/mote-site/
 EOF
 )"
+fi
 
 if gh release view "$TAG" --repo "$OWNER/$MOTE_REPO" >/dev/null 2>&1; then
   echo "  release $TAG already exists."
@@ -176,6 +159,7 @@ if gh release view "$TAG" --repo "$OWNER/$MOTE_REPO" >/dev/null 2>&1; then
     echo "Done.  repo: https://github.com/$OWNER/$MOTE_REPO"
     exit 0
   }
+  gh release edit "$TAG" --repo "$OWNER/$MOTE_REPO" --notes "$NOTES"
   # shellcheck disable=SC2086
   gh release upload "$TAG" $ASSETS --repo "$OWNER/$MOTE_REPO" --clobber
 else
