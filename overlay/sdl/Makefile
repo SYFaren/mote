@@ -6,7 +6,7 @@ include ../build.mk
 
 CORE = $(ROOT)/core/buffer.c $(ROOT)/core/utf8.c $(ROOT)/core/undo.c \
 	$(ROOT)/core/hl.c $(ROOT)/core/editor.c $(ROOT)/core/theme.c \
-	$(ROOT)/core/config.c $(ROOT)/core/mote_snprintf.c
+	$(ROOT)/core/config.c $(ROOT)/core/mote_snprintf.c $(ROOT)/core/regex.c $(ROOT)/core/dirlist.c
 OV = ../soft/main.c sdl.c ../posix/os.c ../soft/soft.c
 SRC = $(CORE) $(OV)
 

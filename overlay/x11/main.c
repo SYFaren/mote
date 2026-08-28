@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
-      printf("%s %s — %s\n", MOTE_NAME, MOTE_VERSION, MOTE_AUTHOR);
+      printf("%s %s+%s — %s\n", MOTE_NAME, MOTE_VERSION, MOTE_BUILD, MOTE_AUTHOR);
       return 0;
     }
     if (strcmp(argv[i], "-g") == 0 || strcmp(argv[i], "--geometry") == 0) {

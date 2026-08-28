@@ -316,7 +316,11 @@ static void kb_key(void *data, struct wl_keyboard *kb, uint32_t serial, uint32_t
   case XKB_KEY_BackSpace: key_nav(p, PK_BACKSPACE); return;
   case XKB_KEY_Delete: key_nav(p, PK_DELETE); return;
   case XKB_KEY_Return:
-  case XKB_KEY_KP_Enter: key_nav(p, PK_ENTER); return;
+  case XKB_KEY_KP_Enter:
+    if (p->ctrl && p->shift) key_nav(p, PK_BOOKMARK_SET);
+    else if (p->ctrl) key_nav(p, PK_BOOKMARK);
+    else key_nav(p, PK_ENTER);
+    return;
   case XKB_KEY_Escape: key_nav(p, PK_ESCAPE); return;
   case XKB_KEY_Tab: key_nav(p, PK_TAB); return;
   case XKB_KEY_F1: key_nav(p, PK_F1); return;

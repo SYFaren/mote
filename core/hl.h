@@ -31,5 +31,6 @@ int hl_line(const HlSyntax *syn, const char *line, size_t len, int in_ml,
             HlSpan *out, int max_out, int *out_ml);
 HlKind hl_kind_at(const HlSpan *spans, int nspans, size_t off);
 const char *hl_lang_name(const HlSyntax *syn);
+int hl_has_multiline(const HlSyntax *syn);
 
 #endif

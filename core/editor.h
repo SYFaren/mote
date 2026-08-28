@@ -19,9 +19,14 @@ typedef enum {
   MODE_QUITASK,
   MODE_HELP,
   MODE_RECENT,
+  MODE_QUICKOPEN,
   MODE_OPENASK,
   MODE_CLOSEASK
 } EdMode;
+
+#define MAX_BOOKMARKS 4
+#define QF_MAX 64
+#define QF_POOL 256
 
 typedef enum { EOL_LF = 0, EOL_CRLF = 1 } EolMode;
 
@@ -45,6 +50,11 @@ typedef struct {
   mote_bool row0_valid;
   size_t match_a, match_b;
   size_t bracket_a, bracket_b;
+  size_t bm_row[MAX_BOOKMARKS]; /* line index, (size_t)-1 = unset */
+  int bm_jump;
+  int hl_in_ml;
+  size_t hl_ml_row;
+  mote_bool hl_ml_valid;
 } Doc;
 
 typedef struct {
@@ -60,13 +70,21 @@ typedef struct {
   char find[192];
   char replace[192];
   char pending_path[1024];
-  mote_bool find_case, find_word;
+  mote_bool find_case, find_word, find_regex;
   mote_bool wrap, show_ws;
+  char qf_dir[1024];
+  char qf_pool[QF_POOL][256];
+  int qf_pool_n;
+  char qf_match[QF_MAX][256];
+  int qf_n, qf_sel;
   mote_bool mouse_down;
   int cols, rows, cw, ch, gutter;
   int theme_id;
   char recent[MAX_RECENT][1024];
   int nrecent, recent_sel;
+  size_t *vrow_cache;
+  size_t vrow_n;
+  int vrow_cols;
 } Editor;
 
 mote_bool ed_init(Editor *e);

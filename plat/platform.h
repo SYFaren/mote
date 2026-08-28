@@ -68,7 +68,11 @@ typedef enum {
   PK_RECENT,
   PK_CLOSEDOC,
   PK_FINDPREV,
-  PK_BRACKET
+  PK_BRACKET,
+  PK_COMMENT,
+  PK_QUICKOPEN,
+  PK_BOOKMARK,
+  PK_BOOKMARK_SET
 } PlatKey;
 
 typedef struct {

@@ -61,6 +61,8 @@ static void map_vk(WPARAM vk, mote_bool ctrl, mote_bool shift, mote_bool alt, Pl
     if (vk == 'H') { ev->key = PK_HELP; return; }
     if (vk == 'N') { ev->key = PK_NEXTDOC; return; }
     if (vk == 'P') { ev->key = PK_PREVDOC; return; }
+    if (vk == 'M') { ev->key = PK_BOOKMARK_SET; return; }
+    if (vk == 'J') { ev->key = PK_BOOKMARK; return; }
   }
   if (ctrl) {
     switch (vk) {
@@ -82,7 +84,19 @@ static void map_vk(WPARAM vk, mote_bool ctrl, mote_bool shift, mote_bool alt, Pl
     case 'D': ev->key = PK_DUPLINE; return;
     case 'K': if (shift) { ev->key = PK_DELLINE; return; } break;
     case 'N': ev->key = PK_NEWDOC; return;
+    case 'M':
+      if (shift) {
+        ev->key = PK_BOOKMARK_SET;
+        return;
+      }
+      ev->key = PK_BOOKMARK;
+      return;
+    case 'J':
+      ev->key = PK_BOOKMARK;
+      return;
+    case 'P': ev->key = shift ? PK_BOOKMARK_SET : PK_QUICKOPEN; return;
     case 'E': ev->key = shift ? PK_EOL : PK_RECENT; return;
+    case VK_OEM_2: ev->key = PK_COMMENT; return;
     case VK_OEM_6: ev->key = PK_BRACKET; return; /* ] */
     case VK_OEM_5: if (shift) { ev->key = PK_BRACKET; return; } break; /* \ */
     case VK_OEM_PLUS:
@@ -106,7 +120,17 @@ static void map_vk(WPARAM vk, mote_bool ctrl, mote_bool shift, mote_bool alt, Pl
   case VK_NEXT: ev->key = PK_PGDN; break;
   case VK_BACK: ev->key = PK_BACKSPACE; break;
   case VK_DELETE: ev->key = PK_DELETE; break;
-  case VK_RETURN: ev->key = PK_ENTER; break;
+  case VK_RETURN:
+    if (ctrl && shift) {
+      ev->key = PK_BOOKMARK_SET;
+      return;
+    }
+    if (ctrl) {
+      ev->key = PK_BOOKMARK;
+      return;
+    }
+    ev->key = PK_ENTER;
+    break;
   case VK_ESCAPE: ev->key = PK_ESCAPE; break;
   case VK_TAB: ev->key = PK_TAB; break;
   case VK_F1: ev->key = PK_F1; break;

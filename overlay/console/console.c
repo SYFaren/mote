@@ -255,10 +255,14 @@ static void ctrl_key(Plat *p, int c, mote_bool shift) {
   case 'k':
     if (shift) k = PK_DELLINE;
     break;
+  case 'b':
+    if (shift) k = PK_BOOKMARK_SET;
+    else k = PK_BOOKMARK;
+    break;
+  case 'p': k = shift ? PK_BOOKMARK_SET : PK_QUICKOPEN; break;
   case '=':
   case '+': k = PK_ZOOMIN; break;
-  case '-':
-  case '_': k = PK_ZOOMOUT; break;
+  case '-': k = PK_ZOOMOUT; break;
   case '0': k = PK_ZOOMRESET; break;
   case ']':
   case '\\': k = PK_BRACKET; break;
@@ -280,6 +284,9 @@ static void alt_letter(Plat *p, char ch) {
   else if (up == 'E') ak = PK_EOL;
   else if (up == 'N') ak = PK_NEXTDOC;
   else if (up == 'P') ak = PK_PREVDOC;
+  else if (up == 'J') ak = PK_BOOKMARK;
+  else if (up == 'B') ak = PK_BOOKMARK_SET;
+  else if (up == 'M') ak = PK_BOOKMARK_SET;
   if (ak != PK_NONE) key_flush(p, ak, MOTE_FALSE, MOTE_FALSE);
   else text_add(p, &ch, 1);
 }
@@ -353,30 +360,50 @@ static int finish_esc(Plat *p) {
   case 'F': k = PK_END; break;
   case 'Z': k = PK_TAB; shift = MOTE_TRUE; break;
   case '~':
-    code = 0;
-    for (j = 2; j < n - 1 && b[j] >= '0' && b[j] <= '9'; j++)
-      code = code * 10 + (b[j] - '0');
-    if (code == 27) {
-      int parts[3] = {0, 0, 0}, pi = 0, v = 0;
+  case 'u':
+    {
+      int parts[8], np = 0, v = 0;
       for (j = 2; j < n - 1; j++) {
         if (b[j] == ';') {
-          if (pi < 3) parts[pi++] = v;
+          if (np < 8) parts[np++] = v;
           v = 0;
         } else if (b[j] >= '0' && b[j] <= '9')
           v = v * 10 + (b[j] - '0');
       }
-      if (pi < 3) parts[pi++] = v;
-      if (parts[0] == 27 && parts[2] == 9) {
-        int m = parts[1];
-        mote_bool sh = (m == 2 || m == 4 || m == 6 || m == 8);
-        mote_bool ct = (m == 5 || m == 6 || m == 7 || m == 8);
-        if (ct)
-          key_flush(p, sh ? PK_PREVDOC : PK_NEXTDOC, MOTE_TRUE, sh);
-        else
-          key_flush(p, PK_TAB, MOTE_FALSE, sh);
-        p->in_n = 0;
-        return 1;
+      if (np < 8) parts[np++] = v;
+      if (np >= 3 && parts[0] == 27 && b[n - 1] == '~') {
+        int mod = parts[1], ch = parts[2];
+        mote_bool sh = (mod == 1 || mod == 3 || mod == 5 || mod == 7);
+        mote_bool ct = (mod == 4 || mod == 5 || mod == 6 || mod == 7);
+        if (ct && !sh && (ch == 109 || ch == 77 || ch == 13)) {
+          key_flush(p, PK_BOOKMARK, MOTE_TRUE, MOTE_FALSE);
+          p->in_n = 0;
+          return 1;
+        }
+        if (ct && sh && (ch == 109 || ch == 77 || ch == 13)) {
+          key_flush(p, PK_BOOKMARK_SET, MOTE_TRUE, MOTE_TRUE);
+          p->in_n = 0;
+          return 1;
+        }
+        if (ct && sh && (ch == 106 || ch == 74)) {
+          key_flush(p, PK_BOOKMARK, MOTE_TRUE, MOTE_TRUE);
+          p->in_n = 0;
+          return 1;
+        }
+        if (ch == 9) {
+          mote_bool ct2 = (mod == 5 || mod == 6 || mod == 7 || mod == 8);
+          mote_bool sh2 = (mod == 2 || mod == 4 || mod == 6 || mod == 8);
+          if (ct2)
+            key_flush(p, sh2 ? PK_PREVDOC : PK_NEXTDOC, MOTE_TRUE, sh2);
+          else
+            key_flush(p, PK_TAB, MOTE_FALSE, sh2);
+          p->in_n = 0;
+          return 1;
+        }
       }
+      code = 0;
+      if (np > 0)
+        code = (b[n - 1] == 'u') ? parts[0] : parts[np - 1];
     }
     if (code == 200) {
       p->paste = MOTE_TRUE;
@@ -399,10 +426,11 @@ static int finish_esc(Plat *p) {
     else if (code == 13) k = shift ? PK_FINDPREV : PK_FINDNEXT; /* F3 */
     else if (code == 14) k = shift ? PK_FINDPREV : PK_CLOSEDOC; /* F4 / S-F3 */
     else if (code == 15) k = PK_RELOAD; /* F5 */
-    else if (code == 17) k = PK_WS;     /* F6 — unused; keep clear */
-    else if (code == 18) k = PK_WS;     /* F7 */
-    else if (code == 19) k = PK_WS;
-    else if (code == 20 || code == 21 || code == 23 || code == 24) k = PK_F1;
+    else if (code == 17) k = PK_WS;          /* F6 */
+    else if (code == 18) k = PK_WS;          /* F7 */
+    else if (code == 19) k = PK_BOOKMARK_SET; /* F8 */
+    else if (code == 20) k = PK_BOOKMARK;     /* F9 */
+    else if (code == 21 || code == 23 || code == 24) k = PK_F1;
     break;
   default:
     break;
@@ -529,6 +557,10 @@ static void ingest(Plat *p, const unsigned char *buf, int n) {
       ctrl_key(p, 'a' + (int)c - 1, MOTE_FALSE);
       continue;
     }
+    if (c == 31) {
+      key_flush(p, PK_COMMENT, MOTE_TRUE, MOTE_FALSE);
+      continue;
+    }
     if (c < 32) continue;
 
     feed_utf8_byte(p, c);
@@ -628,6 +660,11 @@ Plat *plat_create(const char *title, int w, int h) {
   /* ESC % G — select UTF-8 (Linux VT); without it Cyrillic is 2 cells + bad caret */
   if (p->utf8)
     fputs("\033%G", stdout);
+  {
+    const char *term = getenv("TERM");
+    if (!term || (strcmp(term, "linux") && strcmp(term, "console")))
+      fputs("\033[>4;1m", stdout); /* xterm modifyOtherKeys: distinct Ctrl+M vs Enter */
+  }
   fputs("\033[?1049h\033[?2004h\033[?25l\033[2J\033[H", stdout);
   if (title && title[0]) printf("\033]0;%s\007", title);
   fflush(stdout);
@@ -642,7 +679,8 @@ void plat_destroy(Plat *p) {
       (void)ioctl(STDIN_FILENO, KDSKBMODE, p->kbmode_saved);
 #endif
     /* Leave a clean TTY: Linux VT often ignores alt-screen, so always clear. */
-    fputs("\033[?2004l"
+    fputs("\033[>4;0m"
+          "\033[?2004l"
           "\033[?25h"
           "\033[0m"
           "\033[?1049l"
@@ -925,3 +963,18 @@ mote_bool plat_clipboard_set(Plat *p, const char *s, size_t n) {
   p->clip_n = n;
   return MOTE_TRUE;
 }
+
+#ifdef MOTE_TEST_CONSOLE_ESC
+void console_test_feed(Plat *p, const unsigned char *buf, int n) {
+  ingest(p, buf, n);
+  flush_esc(p);
+  text_flush(p);
+}
+
+PlatKey console_test_last_key(const Plat *p) {
+  int i;
+  for (i = p->q_n - 1; i >= 0; i--)
+    if (p->q[i].type == PE_KEY) return p->q[i].key;
+  return PK_NONE;
+}
+#endif

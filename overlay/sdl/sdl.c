@@ -100,7 +100,11 @@ static void map_key(Plat *p, const SDL_KeyboardEvent *ke) {
   case SDLK_BACKSPACE: pk = PK_BACKSPACE; break;
   case SDLK_DELETE: pk = PK_DELETE; break;
   case SDLK_RETURN:
-  case SDLK_KP_ENTER: pk = PK_ENTER; break;
+  case SDLK_KP_ENTER:
+    if (ctrl && shift) pk = PK_BOOKMARK_SET;
+    else if (ctrl) pk = PK_BOOKMARK;
+    else pk = PK_ENTER;
+    break;
   case SDLK_ESCAPE: pk = PK_ESCAPE; break;
   case SDLK_TAB: pk = PK_TAB; break;
   case SDLK_F1: pk = PK_F1; break;

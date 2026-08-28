@@ -3,6 +3,8 @@
 #include "theme.h"
 #include "hl.h"
 #include "utf8.h"
+#include "regex.h"
+#include "dirlist.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,9 +45,17 @@ static mote_u32 hl_color(const Theme *t, HlKind k) {
   }
 }
 
+static size_t count_nl(const char *s, size_t n) {
+  size_t i, c = 0;
+  for (i = 0; i < n; i++)
+    if (s[i] == '\n') c++;
+  return c;
+}
+
 static void lines_mark_dirty(Doc *d) {
   d->lines.dirty = MOTE_TRUE;
   d->row0_valid = MOTE_FALSE;
+  d->hl_ml_valid = MOTE_FALSE;
 }
 
 static void lines_shift(Doc *d, size_t pos, long delta) {
@@ -93,8 +103,33 @@ static void set_status(Editor *e, const char *s) {
 }
 static void unsaved_ask(Editor *e, const char *verb) {
   char b[72];
+  e->prompt[0] = 0;
   mote_snprintf(b, sizeof b, "Unsaved — ^S %s  ^Q discard  Esc", verb);
   set_status(e, b);
+}
+
+static mote_bool prompt_accepts_input(EdMode mode) {
+  return mode == MODE_OPEN || mode == MODE_SAVEAS || mode == MODE_FIND ||
+         mode == MODE_REPLACE || mode == MODE_GOTO;
+}
+
+static const char *prompt_bar_prefix(EdMode mode) {
+  switch (mode) {
+  case MODE_OPEN:
+    return "Open:";
+  case MODE_SAVEAS:
+    return "Save As:";
+  case MODE_FIND:
+    return "Find (/re/ or text, Alt+C case, Alt+W word):";
+  case MODE_REPLACE:
+    return "Replace (/find/repl/ or text):";
+  case MODE_GOTO:
+    return "Goto:";
+  case MODE_QUICKOPEN:
+    return "Go to file — type filter, j/k Enter:";
+  default:
+    return "";
+  }
 }
 
 
@@ -184,6 +219,49 @@ static size_t row_start(Doc *d, size_t row) {
   return d->lines.off[row];
 }
 
+static void bm_clamp_rows(Doc *d) {
+  int i;
+  ensure_lines(d);
+  if (!d->lines.n) return;
+  for (i = 0; i < MAX_BOOKMARKS; i++)
+    if (d->bm_row[i] != (size_t)-1 && d->bm_row[i] >= d->lines.n)
+      d->bm_row[i] = d->lines.n - 1;
+}
+
+static void bm_line_insert(Doc *d, size_t pos, size_t nl_count) {
+  size_t er, ec, rs;
+  int i;
+  if (!nl_count) return;
+  ensure_lines(d);
+  pos_to_rc(d, pos, &er, &ec);
+  rs = row_start(d, er);
+  for (i = 0; i < MAX_BOOKMARKS; i++) {
+    size_t br = d->bm_row[i];
+    if (br == (size_t)-1) continue;
+    if (br > er)
+      d->bm_row[i] = br + nl_count;
+    else if (br == er && pos > rs)
+      d->bm_row[i] = br + nl_count;
+  }
+}
+
+static void bm_line_delete(Doc *d, size_t pos, size_t nl_count) {
+  size_t er, ec;
+  int i;
+  if (!nl_count) return;
+  ensure_lines(d);
+  pos_to_rc(d, pos, &er, &ec);
+  for (i = 0; i < MAX_BOOKMARKS; i++) {
+    size_t br = d->bm_row[i];
+    if (br == (size_t)-1) continue;
+    if (br > er + nl_count)
+      d->bm_row[i] = br - nl_count;
+    else if (br > er)
+      d->bm_row[i] = er;
+  }
+  bm_clamp_rows(d);
+}
+
 static size_t rc_to_pos(Doc *d, size_t row, size_t col) {
   size_t start, end, len = buf_len(&d->buf);
   ensure_lines(d);
@@ -240,6 +318,41 @@ static size_t view_vrow0(Editor *e, Doc *d) {
   size_t r, v = 0;
   for (r = 0; r < d->row0; r++) v += segs_of(e, d, r);
   return v + d->wrap0;
+}
+
+static size_t view_vrow0_vp(Editor *e, Doc *d, const size_t *vp) {
+  if (vp) return vp[d->row0] + d->wrap0;
+  return view_vrow0(e, d);
+}
+
+static void caret_vis_vp(Editor *e, Doc *d, size_t *vr, size_t *vc,
+                         const size_t *vp) {
+  if (vp) {
+    *vr = vp[d->caret_row];
+    if (e->wrap && e->cols > 0) {
+      if (d->caret_col > 0 && (d->caret_col % (size_t)e->cols) == 0) {
+        *vr += d->caret_col / (size_t)e->cols - 1;
+        *vc = (size_t)e->cols;
+      } else {
+        *vr += d->caret_col / (size_t)e->cols;
+        *vc = d->caret_col % (size_t)e->cols;
+      }
+    } else {
+      *vc = d->caret_col;
+    }
+    return;
+  }
+  caret_vis(e, d, vr, vc);
+}
+
+static size_t *build_vrow_prefix(Editor *e, Doc *d, size_t nlines) {
+  size_t r, *vp;
+  if (!e->wrap || e->cols < 1 || nlines == 0) return NULL;
+  vp = (size_t *)malloc((nlines + 1) * sizeof(size_t));
+  if (!vp) return NULL;
+  vp[0] = 0;
+  for (r = 0; r < nlines; r++) vp[r + 1] = vp[r] + segs_of(e, d, r);
+  return vp;
 }
 
 static void set_view_vrow(Editor *e, Doc *d, size_t want) {
@@ -319,6 +432,7 @@ static mote_bool push_delete(Editor *e, Doc *d, size_t pos, size_t n) {
     set_status(e, "out of memory");
     return MOTE_FALSE;
   }
+  if (has_nl) bm_line_delete(d, pos, count_nl(t, n));
   free(t);
   buf_delete(&d->buf, pos, n);
   d->dirty = MOTE_TRUE;
@@ -340,6 +454,7 @@ static mote_bool push_insert(Editor *e, Doc *d, size_t pos, const char *s, size_
       break;
     }
   }
+  if (has_nl) bm_line_insert(d, pos, count_nl(s, n));
   if (!buf_insert(&d->buf, pos, s, n)) {
     set_status(e, "out of memory");
     return MOTE_FALSE;
@@ -351,7 +466,10 @@ static mote_bool push_insert(Editor *e, Doc *d, size_t pos, const char *s, size_
   }
   d->dirty = MOTE_TRUE;
   clamp_caret(d);
-  if (has_nl) lines_mark_dirty(d);
+  if (has_nl) {
+    lines_mark_dirty(d);
+    bm_clamp_rows(d);
+  }
   else lines_shift(d, pos, (long)n);
   mark(e);
   return MOTE_TRUE;
@@ -413,6 +531,7 @@ static void insert_autoclose(Editor *e, Doc *d, char open, char close) {
 
 static void apply_undo_act(Editor *e, Doc *d, UndoAct *a, int redo) {
   if (a->kind == (redo ? U_INSERT : U_DELETE)) {
+    bm_line_insert(d, a->pos, count_nl(a->text, a->len));
     if (!buf_insert(&d->buf, a->pos, a->text, a->len)) {
       if (redo) d->undo.head--;
       else d->undo.head++;
@@ -421,6 +540,7 @@ static void apply_undo_act(Editor *e, Doc *d, UndoAct *a, int redo) {
     }
     d->caret = a->pos + a->len;
   } else {
+    bm_line_delete(d, a->pos, count_nl(a->text, a->len));
     buf_delete(&d->buf, a->pos, a->len);
     d->caret = a->pos;
   }
@@ -670,19 +790,28 @@ static void try_save(Editor *e, Doc *d) {
   }
 }
 
-static mote_bool match_at(Editor *e, Doc *d, size_t i, size_t flen) {
+static mote_bool match_at(Editor *e, Doc *d, size_t i, size_t *out_len) {
   size_t len = buf_len(&d->buf);
-  if (i + flen > len) return MOTE_FALSE;
-  if (e->find_case) {
-    if (!buf_match(&d->buf, i, e->find, flen)) return MOTE_FALSE;
+  size_t flen;
+  if (!e->find[0]) return MOTE_FALSE;
+  if (e->find_regex) {
+    flen = re_match_buf(&d->buf, i, e->find, e->find_case);
+    if (!flen) return MOTE_FALSE;
   } else {
-    if (!buf_match_ci(&d->buf, i, e->find, flen)) return MOTE_FALSE;
+    flen = strlen(e->find);
+    if (i + flen > len) return MOTE_FALSE;
+    if (e->find_case) {
+      if (!buf_match(&d->buf, i, e->find, flen)) return MOTE_FALSE;
+    } else {
+      if (!buf_match_ci(&d->buf, i, e->find, flen)) return MOTE_FALSE;
+    }
   }
   if (e->find_word) {
     if (i > 0 && is_word((unsigned char)buf_at(&d->buf, i - 1))) return MOTE_FALSE;
     if (i + flen < len && is_word((unsigned char)buf_at(&d->buf, i + flen)))
       return MOTE_FALSE;
   }
+  if (out_len) *out_len = flen;
   return MOTE_TRUE;
 }
 
@@ -697,24 +826,26 @@ static void apply_match(Editor *e, Doc *d, size_t i, size_t flen, const char *ms
 }
 
 static void find_next(Editor *e, Doc *d) {
-  size_t len, i, flen;
-  if (!e->find[0]) return;
+  size_t len, i, mlen;
+  if (!e->find[0]) {
+    set_status(e, "no pattern");
+    return;
+  }
   len = buf_len(&d->buf);
-  flen = strlen(e->find);
-  if (!flen || flen > len) {
+  if (!len) {
     set_status(e, "not found");
     return;
   }
   i = d->caret < len ? ed_next(d, d->caret) : len;
-  for (; i + flen <= len; i = ed_next(d, i)) {
-    if (match_at(e, d, i, flen)) {
-      apply_match(e, d, i, flen, "found");
+  for (; i < len; i = ed_next(d, i)) {
+    if (match_at(e, d, i, &mlen)) {
+      apply_match(e, d, i, mlen, "found");
       return;
     }
   }
-  for (i = 0; i + flen <= len && i <= d->caret; i = ed_next(d, i)) {
-    if (match_at(e, d, i, flen)) {
-      apply_match(e, d, i, flen, "found (wrap)");
+  for (i = 0; i < len && i <= d->caret; i = ed_next(d, i)) {
+    if (match_at(e, d, i, &mlen)) {
+      apply_match(e, d, i, mlen, "found (wrap)");
       return;
     }
   }
@@ -723,28 +854,36 @@ static void find_next(Editor *e, Doc *d) {
 }
 
 static void find_prev(Editor *e, Doc *d) {
-  size_t len, i, flen, lim, best = (size_t)-1;
-  if (!e->find[0]) return;
+  size_t len, i, lim, best = (size_t)-1, best_m = 0, mlen;
+  if (!e->find[0]) {
+    set_status(e, "no pattern");
+    return;
+  }
   len = buf_len(&d->buf);
-  flen = strlen(e->find);
-  if (!flen || flen > len) {
+  if (!len) {
     set_status(e, "not found");
     return;
   }
   lim = has_sel(d) ? sel_lo(d) : d->caret;
-  for (i = 0; i < lim && i + flen <= len; i = ed_next(d, i)) {
-    if (match_at(e, d, i, flen)) best = i;
+  for (i = 0; i < lim; i = ed_next(d, i)) {
+    if (match_at(e, d, i, &mlen)) {
+      best = i;
+      best_m = mlen;
+    }
   }
   if (best != (size_t)-1) {
-    apply_match(e, d, best, flen, "found");
+    apply_match(e, d, best, best_m, "found");
     return;
   }
   best = (size_t)-1;
-  for (i = 0; i + flen <= len; i = ed_next(d, i)) {
-    if (match_at(e, d, i, flen)) best = i;
+  for (i = 0; i < len; i = ed_next(d, i)) {
+    if (match_at(e, d, i, &mlen)) {
+      best = i;
+      best_m = mlen;
+    }
   }
   if (best != (size_t)-1) {
-    apply_match(e, d, best, flen, "found (wrap)");
+    apply_match(e, d, best, best_m, "found (wrap)");
     return;
   }
   d->match_a = d->match_b = 0;
@@ -823,7 +962,7 @@ static void find_bracket(Doc *d) {
 }
 
 static void do_replace_all(Editor *e, Doc *d) {
-  size_t flen, rlen, i, count = 0;
+  size_t rlen, i, count = 0, mlen;
   if (!can_edit(d)) {
     set_status(e, "readonly");
     return;
@@ -832,15 +971,14 @@ static void do_replace_all(Editor *e, Doc *d) {
     set_status(e, "find first (Ctrl+F)");
     return;
   }
-  flen = strlen(e->find);
   rlen = strlen(e->replace);
   i = 0;
-  while (i + flen <= buf_len(&d->buf)) {
-    if (!match_at(e, d, i, flen)) {
+  while (i < buf_len(&d->buf)) {
+    if (!match_at(e, d, i, &mlen)) {
       i = ed_next(d, i);
       continue;
     }
-    if (!push_delete(e, d, i, flen)) {
+    if (!push_delete(e, d, i, mlen)) {
       set_status(e, "replace aborted");
       break;
     }
@@ -862,6 +1000,211 @@ static void do_replace_all(Editor *e, Doc *d) {
   mark(e);
 }
 
+static int parse_slash_cmd(const char *in, char *pat, size_t patn, char *repl,
+                           size_t repln) {
+  const char *p, *q, *r;
+  size_t n;
+  if (!in || in[0] != '/' || !pat || patn < 2) return 0;
+  p = in + 1;
+  q = p;
+  while (*q && *q != '/') {
+    if (*q == '\\' && q[1]) q += 2;
+    else q++;
+  }
+  if (*q != '/') return 0;
+  n = (size_t)(q - p);
+  if (n >= patn) n = patn - 1;
+  memcpy(pat, p, n);
+  pat[n] = 0;
+  if (repl && repln) {
+    repl[0] = 0;
+    r = q + 1;
+    p = r;
+    while (*r && *r != '/') {
+      if (*r == '\\' && r[1]) r += 2;
+      else r++;
+    }
+    if (*r == '/') {
+      n = (size_t)(r - p);
+      if (n >= repln) n = repln - 1;
+      memcpy(repl, p, n);
+      repl[n] = 0;
+    }
+  }
+  return 1;
+}
+
+static const char *comment_prefix(Doc *d) {
+  const char *lang = hl_lang_name(hl_select(d->path));
+  if (strcmp(lang, "python") == 0 || strcmp(lang, "shell") == 0 ||
+      strcmp(lang, "yaml") == 0)
+    return "#";
+  return "//";
+}
+
+static size_t line_indent_pos(Doc *d, size_t row) {
+  size_t pos = row_start(d, row);
+  size_t end = line_end(d, pos);
+  while (pos < end) {
+    char c = buf_at(&d->buf, pos);
+    if (c != ' ' && c != '\t') break;
+    pos++;
+  }
+  return pos;
+}
+
+static void toggle_comment(Editor *e, Doc *d) {
+  size_t r0, r1, row, pos, pfxlen, end;
+  const char *pfx;
+  int all = 1, any = 0;
+  if (!can_edit(d)) {
+    set_status(e, "readonly");
+    return;
+  }
+  pfx = comment_prefix(d);
+  pfxlen = strlen(pfx);
+  ensure_lines(d);
+  if (!has_sel(d)) {
+    r0 = r1 = d->caret_row;
+  } else {
+    pos_to_rc(d, sel_lo(d), &r0, &row);
+    pos_to_rc(d, sel_hi(d) > 0 ? sel_hi(d) - 1 : sel_hi(d), &r1, &row);
+    (void)row;
+  }
+  for (row = r0; row <= r1; row++) {
+    size_t k;
+    pos = line_indent_pos(d, row);
+    end = line_end(d, row_start(d, row));
+    if (pos >= end) continue;
+    any = 1;
+    if ((size_t)(end - pos) < pfxlen) {
+      all = 0;
+      continue;
+    }
+    for (k = 0; k < pfxlen; k++) {
+      if (buf_at(&d->buf, pos + k) != pfx[k]) {
+        all = 0;
+        break;
+      }
+    }
+  }
+  if (!any) return;
+  for (row = r0; row <= r1; row++) {
+    pos = line_indent_pos(d, row);
+    end = line_end(d, row_start(d, row));
+    if (pos >= end) continue;
+    if (all) {
+      size_t k;
+      for (k = 0; k < pfxlen; k++) {
+        if (pos + k >= end || buf_at(&d->buf, pos + k) != pfx[k]) break;
+      }
+      if (k == pfxlen) push_delete(e, d, pos, pfxlen);
+    } else {
+      push_insert(e, d, pos, pfx, pfxlen, MOTE_FALSE);
+    }
+  }
+  sync_caret_rc(d);
+  ensure_visible(e, d);
+  set_status(e, all ? "uncommented" : "commented");
+  mark(e);
+}
+
+static int fuzzy_score(const char *q, const char *name) {
+  int score = 0, streak = 0;
+  const char *p = q;
+  const char *s = name;
+  if (!q || !q[0]) return 0;
+  if (!name) return -1;
+  while (*p) {
+    char qc = *p;
+    char found = 0;
+    if (qc >= 'A' && qc <= 'Z') qc = (char)(qc - 'A' + 'a');
+    for (; *s; s++) {
+      char sc = *s;
+      if (sc >= 'A' && sc <= 'Z') sc = (char)(sc - 'A' + 'a');
+      if (sc == qc) {
+        found = 1;
+        break;
+      }
+    }
+    if (!found) return -1;
+    if (s == name) score += 20;
+    streak++;
+    score += 5 + streak;
+    p++;
+    s++;
+  }
+  score -= (int)strlen(name) / 4;
+  return score;
+}
+
+static void path_dir_of(const char *path, char *dir, size_t n) {
+  const char *slash, *bs;
+  size_t len;
+  if (!dir || n == 0) return;
+  if (!path || !path[0]) {
+    mote_snprintf(dir, n, ".");
+    return;
+  }
+  slash = strrchr(path, '/');
+  bs = strrchr(path, '\\');
+  if (bs && (!slash || bs > slash)) slash = bs;
+  if (!slash) {
+    mote_snprintf(dir, n, ".");
+    return;
+  }
+  len = (size_t)(slash - path);
+  if (len == 0) len = 1;
+  if (len >= n) len = n - 1;
+  memcpy(dir, path, len);
+  dir[len] = 0;
+}
+
+static void qf_sort_names(char names[][256], int n) {
+  int i, j;
+  for (i = 0; i + 1 < n; i++) {
+    for (j = i + 1; j < n; j++) {
+      if (strcmp(names[i], names[j]) > 0) {
+        char tmp[256];
+        memcpy(tmp, names[i], sizeof tmp);
+        memcpy(names[i], names[j], sizeof names[j]);
+        memcpy(names[j], tmp, sizeof tmp);
+      }
+    }
+  }
+}
+
+static void quickopen_filter(Editor *e) {
+  int i, n = 0;
+  const char *q = e->prompt;
+  for (i = 0; i < e->qf_pool_n && n < QF_MAX; i++) {
+    int sc = fuzzy_score(q, e->qf_pool[i]);
+    if (sc < 0) continue;
+    mote_snprintf(e->qf_match[n], sizeof e->qf_match[0], "%s", e->qf_pool[i]);
+    n++;
+  }
+  if (!q[0]) {
+    n = e->qf_pool_n;
+    if (n > QF_MAX) n = QF_MAX;
+    for (i = 0; i < n; i++)
+      mote_snprintf(e->qf_match[i], sizeof e->qf_match[0], "%s", e->qf_pool[i]);
+  }
+  e->qf_n = n;
+  if (e->qf_sel >= n) e->qf_sel = n > 0 ? n - 1 : 0;
+}
+
+static void quickopen_begin(Editor *e, Doc *d) {
+  path_dir_of(d->path[0] ? d->path : ".", e->qf_dir, sizeof e->qf_dir);
+  e->qf_pool_n = dirlist_files(e->qf_dir, e->qf_pool, QF_POOL);
+  qf_sort_names(e->qf_pool, e->qf_pool_n);
+  e->prompt[0] = 0;
+  e->qf_sel = 0;
+  quickopen_filter(e);
+  e->mode = MODE_QUICKOPEN;
+  set_status(e, "Go to file — type filter  j/k Enter");
+  mark(e);
+}
+
 static void goto_line(Editor *e, Doc *d, size_t line1) {
   size_t row;
   ensure_lines(d);
@@ -874,6 +1217,73 @@ static void goto_line(Editor *e, Doc *d, size_t line1) {
   ensure_visible(e, d);
   set_status(e, "ok");
   mark(e);
+}
+
+static size_t bookmark_target_row(Doc *d) {
+  size_t row, ls, le, len;
+  sync_caret_rc(d);
+  ensure_lines(d);
+  row = d->caret_row;
+  len = buf_len(&d->buf);
+  ls = line_start(d, d->caret);
+  le = line_end(d, ls);
+  /* Ignore phantom empty line after trailing newline at EOF. */
+  if (row > 0 && ls == le && ls == len) row--;
+  if (d->lines.n && row >= d->lines.n) row = d->lines.n - 1;
+  return row;
+}
+
+static void bookmark_toggle(Editor *e, Doc *d) {
+  size_t row;
+  int i, slot = 0;
+  row = bookmark_target_row(d);
+  for (i = 0; i < MAX_BOOKMARKS; i++) {
+    if (d->bm_row[i] == row) {
+      d->bm_row[i] = (size_t)-1;
+      set_status(e, "mark cleared");
+      mark(e);
+      return;
+    }
+  }
+  for (i = 0; i < MAX_BOOKMARKS; i++) {
+    if (d->bm_row[i] == (size_t)-1) {
+      slot = i;
+      break;
+    }
+    slot = i + 1;
+  }
+  if (slot >= MAX_BOOKMARKS) slot = 0;
+  d->bm_row[slot] = row;
+  {
+    char msg[32];
+    mote_snprintf(msg, sizeof msg, "mark %d", slot + 1);
+    set_status(e, msg);
+  }
+  mark(e);
+}
+
+static void bookmark_jump(Editor *e, Doc *d) {
+  int tries = 0;
+  sync_caret_rc(d);
+  if (d->bm_row[d->bm_jump] == (size_t)-1) d->bm_jump = 0;
+  for (tries = 0; tries < MAX_BOOKMARKS; tries++) {
+    if (d->bm_row[d->bm_jump] != (size_t)-1) {
+      d->caret = row_start(d, d->bm_row[d->bm_jump]);
+      clear_sel(d);
+      sync_caret_rc(d);
+      ensure_visible(e, d);
+      {
+        char msg[32];
+        mote_snprintf(msg, sizeof msg, "mark %d", d->bm_jump + 1);
+        set_status(e, msg);
+      }
+      d->bm_jump = (d->bm_jump + 1) % MAX_BOOKMARKS;
+      mark(e);
+      return;
+    }
+    d->bm_jump = (d->bm_jump + 1) % MAX_BOOKMARKS;
+  }
+  set_status(e, "no bookmarks");
 }
 
 static void insert_newline_indent(Editor *e, Doc *d) {
@@ -1082,9 +1492,11 @@ static size_t click_to_pos(Editor *e, Doc *d, int mx, int my) {
 }
 
 static void doc_reset(Doc *d) {
+  int i;
   memset(d, 0, sizeof *d);
   d->lines.dirty = MOTE_TRUE;
   d->bracket_a = d->bracket_b = (size_t)-1;
+  for (i = 0; i < MAX_BOOKMARKS; i++) d->bm_row[i] = (size_t)-1;
   d->eol = EOL_LF;
 }
 
@@ -1119,6 +1531,8 @@ mote_bool ed_init(Editor *e) {
 
 void ed_free(Editor *e) {
   int i;
+  free(e->vrow_cache);
+  e->vrow_cache = NULL;
   for (i = 0; i < e->ndocs; i++) doc_free(&e->docs[i]);
 }
 
@@ -1286,6 +1700,50 @@ static void reload_doc(Editor *e, Doc *d) {
   set_status(e, "reloaded");
 }
 
+static void find_sync_prompt(Editor *e) {
+  char pat[192], repl[192];
+  if (e->mode != MODE_FIND && e->mode != MODE_REPLACE) return;
+  if (parse_slash_cmd(e->prompt, pat, sizeof pat, repl, sizeof repl)) {
+    mote_snprintf(e->find, sizeof e->find, "%s", pat);
+    e->find_regex = MOTE_TRUE;
+  } else {
+    mote_snprintf(e->find, sizeof e->find, "%.255s", e->prompt);
+    e->find_regex = MOTE_FALSE;
+  }
+}
+
+static mote_bool handle_global_keys(Editor *e, Doc *d, const PlatEvent *ev) {
+  if (ev->type != PE_KEY) return MOTE_FALSE;
+  switch (ev->key) {
+  case PK_BOOKMARK_SET:
+    bookmark_toggle(e, d);
+    return MOTE_TRUE;
+  case PK_BOOKMARK:
+    bookmark_jump(e, d);
+    return MOTE_TRUE;
+  case PK_FINDCASE:
+    e->find_case = !e->find_case;
+    set_status(e, e->find_case ? "find: case on" : "find: case off");
+    return MOTE_TRUE;
+  case PK_FINDWORD:
+    e->find_word = !e->find_word;
+    set_status(e, e->find_word ? "find: word on" : "find: word off");
+    return MOTE_TRUE;
+  case PK_FINDNEXT:
+    find_sync_prompt(e);
+    if (e->find[0]) find_next(e, d);
+    else set_status(e, "type pattern, Enter");
+    return MOTE_TRUE;
+  case PK_FINDPREV:
+    find_sync_prompt(e);
+    if (e->find[0]) find_prev(e, d);
+    else set_status(e, "type pattern, Enter");
+    return MOTE_TRUE;
+  default:
+    return MOTE_FALSE;
+  }
+}
+
 static void prompt_enter(Editor *e) {
   Doc *d = D(e);
   if (e->mode == MODE_OPEN) {
@@ -1318,11 +1776,18 @@ static void prompt_enter(Editor *e) {
     }
     e->mode = MODE_EDIT;
   } else if (e->mode == MODE_FIND) {
-    mote_snprintf(e->find, sizeof e->find, "%.255s", e->prompt);
+    find_sync_prompt(e);
     e->mode = MODE_EDIT;
     find_next(e, d);
   } else if (e->mode == MODE_REPLACE) {
-    mote_snprintf(e->replace, sizeof e->replace, "%.255s", e->prompt);
+    char pat[192], repl[192];
+    if (parse_slash_cmd(e->prompt, pat, sizeof pat, repl, sizeof repl)) {
+      mote_snprintf(e->find, sizeof e->find, "%s", pat);
+      mote_snprintf(e->replace, sizeof e->replace, "%s", repl);
+      e->find_regex = MOTE_TRUE;
+    } else {
+      mote_snprintf(e->replace, sizeof e->replace, "%.255s", e->prompt);
+    }
     e->mode = MODE_EDIT;
     do_replace_all(e, d);
   } else if (e->mode == MODE_GOTO) {
@@ -1334,7 +1799,9 @@ static void prompt_enter(Editor *e) {
 }
 
 static void handle_prompt(Editor *e, const PlatEvent *ev) {
+  Doc *d = D(e);
   size_t n;
+  if (handle_global_keys(e, d, ev)) return;
   if (ev->type == PE_KEY) {
     if (ev->key == PK_ESCAPE) {
       e->mode = MODE_EDIT;
@@ -1346,6 +1813,7 @@ static void handle_prompt(Editor *e, const PlatEvent *ev) {
       return;
     }
     if (ev->key == PK_BACKSPACE) {
+      if (!prompt_accepts_input(e->mode)) return;
       n = strlen(e->prompt);
       if (n) {
         n = utf8_prev(e->prompt, n);
@@ -1355,10 +1823,13 @@ static void handle_prompt(Editor *e, const PlatEvent *ev) {
       return;
     }
   }
-  if (ev->type == PE_TEXT && ev->text_len > 0 && e->mode != MODE_QUITASK &&
-      e->mode != MODE_OPENASK && e->mode != MODE_CLOSEASK &&
-      e->mode != MODE_HELP && e->mode != MODE_RECENT) {
+  if (ev->type == PE_TEXT && ev->text_len > 0 && prompt_accepts_input(e->mode)) {
     n = strlen(e->prompt);
+    if ((e->mode == MODE_FIND || e->mode == MODE_REPLACE) && n > 0 &&
+        ev->text[0] == '/' && e->prompt[0] != '/') {
+      e->prompt[0] = 0;
+      n = 0;
+    }
     if (n + (size_t)ev->text_len < sizeof e->prompt - 1) {
       memcpy(e->prompt + n, ev->text, (size_t)ev->text_len);
       e->prompt[n + (size_t)ev->text_len] = 0;
@@ -1392,6 +1863,7 @@ void ed_handle(Editor *e, Plat *p, const PlatEvent *ev) {
     mark(e);
     return;
   }
+  if (ev->type == PE_KEY && handle_global_keys(e, d, ev)) return;
   if (ev->type == PE_QUIT) {
     request_quit(e);
     return;
@@ -1447,6 +1919,64 @@ void ed_handle(Editor *e, Plat *p, const PlatEvent *ev) {
       if (ev->text[0] == 'j' && e->nrecent && e->recent_sel + 1 < e->nrecent)
         e->recent_sel++;
       mark(e);
+      return;
+    }
+    return;
+  }
+
+  if (e->mode == MODE_QUICKOPEN) {
+    if (ev->type == PE_KEY) {
+      if (ev->key == PK_ESCAPE) {
+        e->mode = MODE_EDIT;
+        set_status(e, "F1 help");
+        return;
+      }
+      if (ev->key == PK_UP) {
+        if (e->qf_sel > 0) e->qf_sel--;
+        mark(e);
+        return;
+      }
+      if (ev->key == PK_DOWN) {
+        if (e->qf_n && e->qf_sel + 1 < e->qf_n) e->qf_sel++;
+        mark(e);
+        return;
+      }
+      if (ev->key == PK_ENTER) {
+        if (e->qf_n > 0) {
+          char path[1024];
+          mote_snprintf(path, sizeof path, "%s/%s", e->qf_dir,
+                        e->qf_match[e->qf_sel]);
+          ed_open_path(e, path);
+        }
+        e->mode = MODE_EDIT;
+        return;
+      }
+    }
+    if (ev->type == PE_TEXT && ev->text_len == 1 &&
+        (ev->text[0] == 'j' || ev->text[0] == 'k')) {
+      if (ev->text[0] == 'k' && e->qf_sel > 0) e->qf_sel--;
+      if (ev->text[0] == 'j' && e->qf_n && e->qf_sel + 1 < e->qf_n) e->qf_sel++;
+      mark(e);
+      return;
+    }
+    if (ev->type == PE_TEXT && ev->text_len > 0) {
+      size_t n = strlen(e->prompt);
+      if (n + (size_t)ev->text_len < sizeof e->prompt - 1) {
+        memcpy(e->prompt + n, ev->text, (size_t)ev->text_len);
+        e->prompt[n + (size_t)ev->text_len] = 0;
+        quickopen_filter(e);
+        mark(e);
+      }
+      return;
+    }
+    if (ev->type == PE_KEY && ev->key == PK_BACKSPACE) {
+      size_t n = strlen(e->prompt);
+      if (n) {
+        n = utf8_prev(e->prompt, n);
+        e->prompt[n] = 0;
+        quickopen_filter(e);
+        mark(e);
+      }
       return;
     }
     return;
@@ -1639,6 +2169,7 @@ void ed_handle(Editor *e, Plat *p, const PlatEvent *ev) {
       np = ed_next(d, d->caret);
       push_delete(e, d, d->caret, np - d->caret);
       clear_sel(d);
+      sync_caret_rc(d);
     }
     mark(e);
     break;
@@ -1662,9 +2193,14 @@ void ed_handle(Editor *e, Plat *p, const PlatEvent *ev) {
   case PK_UNDO: do_undo(e, d); break;
   case PK_REDO: do_redo(e, d); break;
   case PK_FIND:
+    if (e->mode == MODE_FIND) {
+      mark(e);
+      break;
+    }
     e->mode = MODE_FIND;
     mote_snprintf(e->prompt, sizeof e->prompt, "%s", e->find);
-    set_status(e, "Find:  Alt+C case  Alt+W word");
+    d->match_a = d->match_b = 0;
+    set_status(e, "Find: /re/ or text  Alt+C case  Alt+W word");
     break;
   case PK_FINDNEXT: find_next(e, d); mark(e); break;
   case PK_FINDPREV: find_prev(e, d); mark(e); break;
@@ -1679,7 +2215,7 @@ void ed_handle(Editor *e, Plat *p, const PlatEvent *ev) {
   case PK_REPLACE:
     e->mode = MODE_REPLACE;
     e->prompt[0] = 0;
-    set_status(e, "Replace:");
+    set_status(e, "Replace: /find/repl/ or text");
     break;
   case PK_GOTO:
     e->mode = MODE_GOTO;
@@ -1703,6 +2239,9 @@ void ed_handle(Editor *e, Plat *p, const PlatEvent *ev) {
     break;
   case PK_WRAP:
     e->wrap = !e->wrap;
+    free(e->vrow_cache);
+    e->vrow_cache = NULL;
+    e->vrow_n = 0;
     if (e->wrap) {
       d->col0 = 0;
       d->wrap0 = 0;
@@ -1762,19 +2301,22 @@ void ed_handle(Editor *e, Plat *p, const PlatEvent *ev) {
     set_status(e, "Recent — j/k Enter, 1-8");
     mark(e);
     break;
+  case PK_QUICKOPEN:
+    quickopen_begin(e, d);
+    break;
+  case PK_COMMENT:
+    toggle_comment(e, d);
+    break;
+  case PK_BOOKMARK_SET:
+    bookmark_toggle(e, d);
+    break;
+  case PK_BOOKMARK:
+    bookmark_jump(e, d);
+    break;
   default:
     break;
   }
 }
-
-static int find_hit(Editor *e, Doc *d, size_t i) {
-  size_t flen;
-  if (!e->find[0]) return 0;
-  flen = strlen(e->find);
-  if (!flen) return 0;
-  return match_at(e, d, i, flen) ? (int)flen : 0;
-}
-
 
 static void draw_text_fit(Plat *p, int x, int y, const char *s, int n, mote_u32 rgb,
                           int max_px, int cw) {
@@ -1814,7 +2356,7 @@ static void draw_range(Editor *e, Doc *d, Plat *p, size_t a, size_t b, int y,
   for (i = a; i < b;) {
     mote_u32 cp;
     char chunk[4], chs[4];
-    int n, wcols = 1, enc, k, hit;
+    int n, wcols = 1, enc, k;
     size_t rem = b - i;
     size_t off = i - a;
     HlKind hk;
@@ -1834,22 +2376,10 @@ static void draw_range(Editor *e, Doc *d, Plat *p, size_t a, size_t b, int y,
         fill_w = (int)(col_max - col);
         if (fill_w < 1) fill_w = 1;
       }
-      hit = find_hit(e, d, i);
       if (selecting && i >= slo && i < shi)
         plat_fill_rect(p, x, y, e->cw * fill_w, e->ch, t->sel);
-      else if (hit > 0 ||
-               (d->match_b > d->match_a && i >= d->match_a && i < d->match_b))
+      else if (d->match_b > d->match_a && i >= d->match_a && i < d->match_b)
         plat_fill_rect(p, x, y, e->cw * fill_w, e->ch, t->match);
-      else if (hit == 0 && e->find[0]) {
-        /* mid-match: if inside a match starting earlier */
-        size_t flen = strlen(e->find), j;
-        for (j = 1; j < flen && j <= i; j++) {
-          if (match_at(e, d, i - j, flen)) {
-            plat_fill_rect(p, x, y, e->cw * fill_w, e->ch, t->match);
-            break;
-          }
-        }
-      }
       hk = hl_kind_at(spans, nspans, off);
       if (i == d->bracket_a || i == d->bracket_b) hk = HL_BRACKET;
       fg = hl_color(t, hk);
@@ -1883,13 +2413,15 @@ void ed_draw(Editor *e, Plat *p) {
   const HlSyntax *syn = hl_select(d->path);
   int in_ml = 0;
   size_t cvr, cvc, top;
+  size_t *vrow_vp = NULL;
   static const char *help[] = {
       "mote  F1/Alt+H help  Esc",
-      "File  ^S Alt+S ^O ^Q  F5  ^N  ^W  ^F4/S-W  ^E  F2/^Tab",
-      "Edit  ^Z/^Y  ^F F3/S-F3  ^R  ^G  ^D  ^]  Alt+K  Tab",
+      "File  ^S Alt+S ^O ^P ^Q  F5  ^N  ^W  ^F4/S-W  ^E  F2/^Tab",
+      "Edit  ^Z/^Y  ^F F3/S-F3  ^R  ^G  ^/  ^D  ^]  Alt+K  Tab",
+      "Nav   ^B jump  F8/Alt+B set  F9/Alt+J  ^M xterm  ^P quick open",
       "Clip  ^X/^C/^V/^A",
       "View  ^T  F7  ^=/^-/^0  Alt+R  Alt+E",
-      "Find  Alt+C case  Alt+W word",
+      "Find  /pat/ regex  /a/b/ replace  Alt+C case  Alt+W word",
       "Ask   ^S confirm  ^Q discard  Esc",
   };
   plat_get_size(p, &w, &h);
@@ -1899,6 +2431,7 @@ void ed_draw(Editor *e, Plat *p) {
   if (e->ch < 1) e->ch = 16;
 
   ensure_lines(d);
+  sync_caret_rc(d);
   nlines = d->lines.n ? d->lines.n : 1;
   digits = 1;
   {
@@ -1927,18 +2460,38 @@ void ed_draw(Editor *e, Plat *p) {
     if (d->wrap0 >= segs) d->wrap0 = segs - 1;
   }
 
-  find_bracket(d);
+  vrow_vp = NULL;
+  if (e->wrap && e->cols > 0 && nlines > 0) {
+    if (!e->vrow_cache || e->vrow_n != nlines || e->vrow_cols != e->cols ||
+        d->lines.dirty) {
+      free(e->vrow_cache);
+      e->vrow_cache = build_vrow_prefix(e, d, nlines);
+      e->vrow_n = nlines;
+      e->vrow_cols = e->cols;
+    }
+    vrow_vp = e->vrow_cache;
+  }
+
+  if (e->mode == MODE_EDIT) find_bracket(d);
 
   plat_begin_frame(p);
   plat_clear(p, t->bg);
   if (e->gutter > 0)
     plat_fill_rect(p, 0, 0, e->gutter, h - e->ch > 0 ? h - e->ch : 0, t->gutter_bg);
 
-  if (syn) {
-    size_t r, ra, rb;
+  if (syn && hl_has_multiline(syn)) {
+    size_t r, r0, ra, rb;
     char linebuf[4096];
     int ncopy;
-    for (r = 0; r < d->row0; r++) {
+    in_ml = 0;
+    if (d->hl_ml_valid && d->hl_ml_row <= d->row0) {
+      r0 = d->hl_ml_row;
+      in_ml = d->hl_in_ml;
+    } else {
+      r0 = d->row0 > 128 ? d->row0 - 128 : 0;
+      d->hl_ml_valid = MOTE_FALSE;
+    }
+    for (r = r0; r < d->row0; r++) {
       ra = row_start(d, r);
       rb = line_end(d, ra);
       ncopy = (int)(rb - ra);
@@ -1947,6 +2500,9 @@ void ed_draw(Editor *e, Plat *p) {
       linebuf[ncopy] = 0;
       hl_line(syn, linebuf, (size_t)ncopy, in_ml, NULL, 0, &in_ml);
     }
+    d->hl_in_ml = in_ml;
+    d->hl_ml_row = d->row0;
+    d->hl_ml_valid = MOTE_TRUE;
   }
 
   if (!d->row0_valid) {
@@ -1975,8 +2531,15 @@ void ed_draw(Editor *e, Plat *p) {
     if (lrow == d->caret_row)
       plat_fill_rect(p, e->gutter, i * e->ch, w - e->gutter, e->ch, t->line);
     if (wseg == 0) {
-      int nlen, nx;
-      mote_snprintf(num, sizeof num, "%*lu", digits, (unsigned long)(lrow + 1));
+      int nlen, nx, bi;
+      mote_bool has_bm = MOTE_FALSE;
+      for (bi = 0; bi < MAX_BOOKMARKS; bi++)
+        if (d->bm_row[bi] != (size_t)-1 && d->bm_row[bi] == lrow) {
+          has_bm = MOTE_TRUE;
+          break;
+        }
+      mote_snprintf(num, sizeof num, "%*lu%c", digits, (unsigned long)(lrow + 1),
+                    has_bm ? '*' : ' ');
       nlen = (int)strlen(num);
       /* right-align in gutter with one cell/gap before text */
       nx = e->gutter - (nlen + 1) * e->cw;
@@ -2006,9 +2569,10 @@ void ed_draw(Editor *e, Plat *p) {
 
   crow = d->caret_row;
   ccol = d->caret_col;
-  caret_vis(e, d, &cvr, &cvc);
-  top = view_vrow0(e, d);
-  if (e->mode != MODE_HELP && e->mode != MODE_RECENT && cvr >= top &&
+  caret_vis_vp(e, d, &cvr, &cvc, vrow_vp);
+  top = view_vrow0_vp(e, d, vrow_vp);
+  if (e->mode != MODE_HELP && e->mode != MODE_RECENT && e->mode != MODE_QUICKOPEN &&
+      cvr >= top &&
       cvr < top + (size_t)e->rows) {
     int cx, cy;
     size_t sc = e->wrap ? cvc : (ccol >= d->col0 ? ccol - d->col0 : 0);
@@ -2029,8 +2593,13 @@ void ed_draw(Editor *e, Plat *p) {
   plat_fill_rect(p, 0, sw, w, h - sw, t->status);
   name = d->path[0] ? d->path : "[untitled]";
   if (e->mode == MODE_OPEN || e->mode == MODE_SAVEAS || e->mode == MODE_FIND ||
-      e->mode == MODE_REPLACE || e->mode == MODE_GOTO)
-    mote_snprintf(bar, sizeof bar, "%s %s", e->status, e->prompt);
+      e->mode == MODE_REPLACE || e->mode == MODE_GOTO || e->mode == MODE_QUICKOPEN) {
+    const char *pfx = prompt_bar_prefix(e->mode);
+    if (e->prompt[0])
+      mote_snprintf(bar, sizeof bar, "%s %s", pfx, e->prompt);
+    else
+      mote_snprintf(bar, sizeof bar, "%s", pfx);
+  }
   else if (e->mode == MODE_QUITASK || e->mode == MODE_OPENASK ||
            e->mode == MODE_CLOSEASK)
     mote_snprintf(bar, sizeof bar, "%s", e->status);
@@ -2049,7 +2618,7 @@ void ed_draw(Editor *e, Plat *p) {
                   e->cw > 0 ? e->cw : 1);
   }
 
-  if (e->mode == MODE_HELP || e->mode == MODE_RECENT) {
+  if (e->mode == MODE_HELP || e->mode == MODE_RECENT || e->mode == MODE_QUICKOPEN) {
     int nlines_h, box_h, box_y, box_w, max_h, max_lines, draw_n, text_w;
     int mx, tx, pad, rows_fit;
     pad = e->cw > 0 ? e->cw : 1;
@@ -2073,8 +2642,10 @@ void ed_draw(Editor *e, Plat *p) {
     max_lines = rows_fit > 2 ? rows_fit - 2 : 1;
     if (e->mode == MODE_HELP)
       nlines_h = (int)(sizeof help / sizeof help[0]);
-    else
+    else if (e->mode == MODE_RECENT)
       nlines_h = e->nrecent + 1;
+    else
+      nlines_h = e->qf_n + 1;
     draw_n = nlines_h;
     if (draw_n > max_lines) draw_n = max_lines;
     box_h = (draw_n + 2) * e->ch;
@@ -2103,7 +2674,7 @@ void ed_draw(Editor *e, Plat *p) {
         if (ly + e->ch <= box_y + box_h)
           draw_text_fit(p, tx, ly, "  ... Esc", 9, t->gutter_fg, text_w, e->cw);
       }
-    } else {
+    } else if (e->mode == MODE_RECENT) {
       draw_text_fit(p, tx, box_y + e->ch, "Recent", 6, t->fg, text_w, e->cw);
       for (i = 0; i < e->nrecent && (i + 1) < draw_n; i++) {
         char line[300];
@@ -2114,6 +2685,17 @@ void ed_draw(Editor *e, Plat *p) {
                       path_base(e->recent[i]));
         draw_text_fit(p, tx, ly, line, (int)strlen(line),
                       i == e->recent_sel ? t->kw : t->fg, text_w, e->cw);
+      }
+    } else {
+      draw_text_fit(p, tx, box_y + e->ch, "Go to file", 10, t->fg, text_w, e->cw);
+      for (i = 0; i < e->qf_n && (i + 1) < draw_n; i++) {
+        char line[300];
+        int ly = box_y + (i + 2) * e->ch;
+        if (ly + e->ch > box_y + box_h) break;
+        mote_snprintf(line, sizeof line, "%s%s",
+                      i == e->qf_sel ? "> " : "  ", e->qf_match[i]);
+        draw_text_fit(p, tx, ly, line, (int)strlen(line),
+                      i == e->qf_sel ? t->kw : t->fg, text_w, e->cw);
       }
     }
   }

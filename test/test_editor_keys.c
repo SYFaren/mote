@@ -291,6 +291,92 @@ int main(void) {
   drain(&ed, p);
   expect(access(path2, R_OK) == 0, "second save path written");
 
+  /* --- new feature tests --- */
+  {
+    const char *qf_other = "/tmp/mote-qf-other.txt";
+    FILE *tf = fopen(qf_other, "w");
+    expect(tf != NULL, "qf fixture");
+    if (tf) {
+      fputs("other\n", tf);
+      fclose(tf);
+    }
+    push_key(p, PK_SELALL, MOTE_TRUE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_DELETE, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_text(p, "int x = 42;");
+    drain(&ed, p);
+    push_key(p, PK_HOME, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    expect(!ed.docs[ed.cur].readonly, "writable for comment");
+
+    push_key(p, PK_COMMENT, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    s = doc_str(&ed);
+    expect(s && strstr(s, "//") && strstr(s, "int"), "comment added");
+    free(s);
+    push_key(p, PK_COMMENT, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    s = doc_str(&ed);
+    expect(s && !strstr(s, "//") && strstr(s, "int"), "comment removed");
+    free(s);
+
+    ed.find[0] = 0;
+    push_key(p, PK_FIND, MOTE_TRUE, MOTE_FALSE);
+    drain(&ed, p);
+    push_text(p, "/\\d+/");
+    drain(&ed, p);
+    push_key(p, PK_ENTER, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    expect(ed.find_regex, "regex find mode");
+    expect(ed.docs[ed.cur].match_b > ed.docs[ed.cur].match_a, "regex found digits");
+
+    push_key(p, PK_SELALL, MOTE_TRUE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_DELETE, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_text(p, "one\ntwo\nthree");
+    drain(&ed, p);
+    push_key(p, PK_UP, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_UP, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_HOME, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+
+    push_key(p, PK_BOOKMARK_SET, MOTE_TRUE, MOTE_TRUE);
+    drain(&ed, p);
+    expect(ed.docs[ed.cur].bm_row[0] != (size_t)-1, "bookmark set");
+    {
+      size_t mark_row = ed.docs[ed.cur].bm_row[0];
+      push_key(p, PK_DOWN, MOTE_FALSE, MOTE_FALSE);
+      drain(&ed, p);
+      push_key(p, PK_DOWN, MOTE_FALSE, MOTE_FALSE);
+      drain(&ed, p);
+      expect(ed.docs[ed.cur].bm_row[0] == mark_row, "bookmark stays on move");
+      expect(ed.docs[ed.cur].caret_row != mark_row, "moved off mark");
+      push_key(p, PK_BOOKMARK, MOTE_TRUE, MOTE_FALSE);
+      drain(&ed, p);
+      expect(ed.docs[ed.cur].caret_row == mark_row, "bookmark jump");
+      expect(ed.docs[ed.cur].bm_row[0] == mark_row, "bookmark row kept");
+    }
+    push_key(p, PK_BOOKMARK_SET, MOTE_TRUE, MOTE_TRUE);
+    drain(&ed, p);
+    expect(ed.docs[ed.cur].bm_row[0] == (size_t)-1, "bookmark toggle clear");
+
+    mote_snprintf(ed.docs[ed.cur].path, sizeof ed.docs[0].path, "%s", path2);
+    push_key(p, PK_QUICKOPEN, MOTE_TRUE, MOTE_FALSE);
+    drain(&ed, p);
+    expect(ed.mode == MODE_QUICKOPEN, "quickopen mode");
+    push_text(p, "other");
+    drain(&ed, p);
+    expect(ed.qf_n > 0, "quickopen filter");
+    push_key(p, PK_ENTER, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    expect(strstr(ed.docs[ed.cur].path, "mote-qf-other") != NULL, "quickopen opened");
+    unlink(qf_other);
+  }
+
   {
     static const PlatKey allk[] = {
         PK_LEFT,     PK_RIGHT,     PK_UP,        PK_DOWN,      PK_HOME,
@@ -298,7 +384,8 @@ int main(void) {
         PK_TAB,      PK_F1,        PK_OPEN,      PK_GOTO,      PK_REPLACE,
         PK_FIND,     PK_FINDPREV,  PK_FINDCASE,  PK_FINDWORD,  PK_BRACKET,
         PK_ZOOMIN,   PK_ZOOMOUT,   PK_ZOOMRESET, PK_RELOAD,    PK_RECENT,
-        PK_HELP,     PK_CLOSEDOC,  PK_SAVEAS};
+        PK_HELP,     PK_CLOSEDOC,  PK_SAVEAS,    PK_COMMENT,   PK_QUICKOPEN,
+        PK_BOOKMARK, PK_BOOKMARK_SET};
     size_t i;
     for (i = 0; i < sizeof allk / sizeof allk[0]; i++) {
       push_key(p, allk[i], MOTE_FALSE, MOTE_FALSE);

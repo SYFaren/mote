@@ -221,6 +221,10 @@ const char *hl_lang_name(const HlSyntax *syn) {
   return syn ? syn->name : "plain";
 }
 
+int hl_has_multiline(const HlSyntax *syn) {
+  return syn && syn->mls && syn->mls[0];
+}
+
 HlKind hl_kind_at(const HlSpan *spans, int nspans, size_t off) {
   int i;
   for (i = 0; i < nspans; i++) {
@@ -245,6 +249,14 @@ int hl_line(const HlSyntax *syn, const char *line, size_t len, int in_ml,
     if (k && (k == len || line[k] == ' '))
       return push_span(out, 0, max_out, 0, len, HL_PREPROC);
   }
+
+  if (syn && (flags & F_MD) && len >= 2 && line[0] == '>' && line[1] == ' ')
+    n = push_span(out, n, max_out, 0, 2, HL_COMMENT);
+
+  if (syn && (flags & F_MD) && len >= 3 &&
+      ((line[0] == '-' && line[1] == '-' && line[2] == '-') ||
+       (line[0] == '*' && line[1] == '*' && line[2] == '*')))
+    return push_span(out, n, max_out, 0, len, HL_COMMENT);
 
   while (i < len) {
     if (syn && syn->mls && syn->mle && in_ml) {
@@ -319,6 +331,42 @@ int hl_line(const HlSyntax *syn, const char *line, size_t len, int in_ml,
       n = push_span(out, n, max_out, i, j, HL_KEYWORD);
       i = j;
       continue;
+    }
+
+    if ((flags & F_MD) && i + 1 < len && line[i] == '*' && line[i + 1] == '*') {
+      size_t j = i + 2;
+      while (j + 1 < len) {
+        if (line[j] == '*' && line[j + 1] == '*') {
+          j += 2;
+          n = push_span(out, n, max_out, i, j, HL_KEYWORD);
+          i = j;
+          continue;
+        }
+        j++;
+      }
+    }
+
+    if ((flags & F_MD) && len - i >= 2 &&
+        (line[i] == '-' || line[i] == '*' || line[i] == '+') &&
+        (i == 0 || line[i - 1] == ' ') && line[i + 1] == ' ') {
+      n = push_span(out, n, max_out, i, i + 2, HL_TYPE);
+      i += 2;
+      continue;
+    }
+
+    if ((flags & F_MD) && i + 1 < len && line[i] == '[') {
+      size_t j = i + 1;
+      while (j < len && line[j] != ']' && line[j] != '\n') j++;
+      if (j < len && j + 1 < len && line[j + 1] == '(') {
+        size_t k = j + 2;
+        n = push_span(out, n, max_out, i, j + 2, HL_KEYWORD);
+        while (k < len && line[k] != ')' && line[k] != '\n') k++;
+        if (k < len) {
+          n = push_span(out, n, max_out, j + 2, k + 1, HL_STRING);
+          i = k + 1;
+          continue;
+        }
+      }
     }
 
     if ((flags & F_STR) && (line[i] == '"' || line[i] == '\'' ||

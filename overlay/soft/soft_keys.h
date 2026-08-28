@@ -18,6 +18,8 @@ static PlatKey soft_ctrl_letter(int ch, mote_bool shift, mote_bool alt) {
     if (c == 'H') return PK_HELP;
     if (c == 'N') return PK_NEXTDOC;
     if (c == 'P') return PK_PREVDOC;
+    if (c == 'M') return PK_BOOKMARK_SET;
+    if (c == 'J') return PK_BOOKMARK;
     return PK_NONE;
   }
   switch (c) {
@@ -46,6 +48,11 @@ static PlatKey soft_ctrl_letter(int ch, mote_bool shift, mote_bool alt) {
   case '-':
   case '_': return PK_ZOOMOUT;
   case '0': return PK_ZOOMRESET;
+  case 'M': return shift ? PK_BOOKMARK_SET : PK_BOOKMARK;
+  case 'J': return PK_BOOKMARK;
+  case 'P': return shift ? PK_BOOKMARK_SET : PK_QUICKOPEN;
+  case '/':
+  case '?': return PK_COMMENT;
   default: return PK_NONE;
   }
 }

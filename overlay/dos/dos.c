@@ -284,6 +284,11 @@ static void ctrl_key(Plat *p, int c, mote_bool shift) {
   case 'k':
     if (shift) k = PK_DELLINE;
     break;
+  case 'm':
+    if (shift) k = PK_BOOKMARK_SET;
+    else k = PK_BOOKMARK;
+    break;
+  case 'p': k = shift ? PK_BOOKMARK_SET : PK_QUICKOPEN; break;
   default: break;
   }
   if (k != PK_NONE) key_flush(p, k, MOTE_TRUE, shift);
@@ -303,6 +308,8 @@ static void alt_letter(Plat *p, int c) {
   case 'H': k = PK_HELP; break;
   case 'N': k = PK_NEXTDOC; break;
   case 'P': k = PK_PREVDOC; break;
+  case 'M': k = PK_BOOKMARK_SET; break;
+  case 'J': k = PK_BOOKMARK; break;
   default: break;
   }
   if (k != PK_NONE) key_flush(p, k, MOTE_FALSE, MOTE_FALSE);

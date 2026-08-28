@@ -146,7 +146,11 @@ static void map_linux_key(Plat *p, int code, int value) {
   case KEY_PAGEDOWN: key_nav(p, PK_PGDN); return;
   case KEY_BACKSPACE: key_nav(p, PK_BACKSPACE); return;
   case KEY_DELETE: key_nav(p, PK_DELETE); return;
-  case KEY_ENTER: key_nav(p, PK_ENTER); return;
+  case KEY_ENTER:
+    if (p->ctrl && p->shift) key_nav(p, PK_BOOKMARK_SET);
+    else if (p->ctrl) key_nav(p, PK_BOOKMARK);
+    else key_nav(p, PK_ENTER);
+    return;
   case KEY_ESC: key_nav(p, PK_ESCAPE); return;
   case KEY_TAB: key_nav(p, PK_TAB); return;
   case KEY_F1: key_nav(p, PK_F1); return;

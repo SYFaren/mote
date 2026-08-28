@@ -482,6 +482,8 @@ static void map_key(KeySym ks, unsigned state, PlatEvent *ev) {
     if (lower == XK_h) { ev->key = PK_HELP; return; }
     if (lower == XK_n) { ev->key = PK_NEXTDOC; return; }
     if (lower == XK_p) { ev->key = PK_PREVDOC; return; }
+    if (lower == XK_m) { ev->key = PK_BOOKMARK_SET; return; }
+    if (lower == XK_j) { ev->key = PK_BOOKMARK; return; }
   }
   if (ctrl) {
     switch (lower) {
@@ -503,7 +505,20 @@ static void map_key(KeySym ks, unsigned state, PlatEvent *ev) {
     case XK_d: ev->key = PK_DUPLINE; return;
     case XK_k: if (shift) { ev->key = PK_DELLINE; return; } break;
     case XK_n: ev->key = PK_NEWDOC; return;
+    case XK_m:
+      if (shift) {
+        ev->key = PK_BOOKMARK_SET;
+        return;
+      }
+      ev->key = PK_BOOKMARK;
+      return;
+    case XK_j:
+      ev->key = PK_BOOKMARK;
+      return;
+    case XK_p: ev->key = shift ? PK_BOOKMARK_SET : PK_QUICKOPEN; return;
     case XK_e: ev->key = shift ? PK_EOL : PK_RECENT; return;
+    case XK_slash:
+    case XK_question: ev->key = PK_COMMENT; return;
     case XK_bracketright: ev->key = PK_BRACKET; return;
     case XK_backslash: if (shift) { ev->key = PK_BRACKET; return; } break;
     case XK_equal:
@@ -532,7 +547,17 @@ static void map_key(KeySym ks, unsigned state, PlatEvent *ev) {
   case XK_BackSpace: ev->key = PK_BACKSPACE; break;
   case XK_Delete: ev->key = PK_DELETE; break;
   case XK_Return:
-  case XK_KP_Enter: ev->key = PK_ENTER; break;
+  case XK_KP_Enter:
+    if (ctrl && shift) {
+      ev->key = PK_BOOKMARK_SET;
+      return;
+    }
+    if (ctrl) {
+      ev->key = PK_BOOKMARK;
+      return;
+    }
+    ev->key = PK_ENTER;
+    break;
   case XK_Escape: ev->key = PK_ESCAPE; break;
   case XK_Tab:
   case XK_ISO_Left_Tab: ev->key = PK_TAB; break;

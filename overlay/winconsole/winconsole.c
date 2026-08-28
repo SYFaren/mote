@@ -226,6 +226,8 @@ static void ctrl_letter(Plat *p, int vk, mote_bool shift) {
   case 'K':
     if (shift) k = PK_DELLINE;
     break;
+  case 'P': k = shift ? PK_BOOKMARK_SET : PK_QUICKOPEN; break;
+  case VK_OEM_2: k = PK_COMMENT; break;
   case VK_OEM_PLUS: k = PK_ZOOMIN; break;
   case VK_OEM_MINUS: k = PK_ZOOMOUT; break;
   case '0': k = PK_ZOOMRESET; break;
@@ -257,6 +259,8 @@ static void ingest_key_event(Plat *p, KEY_EVENT_RECORD *ke) {
     else if (vk == 'E' || vk == 'e') ak = PK_EOL;
     else if (vk == 'N' || vk == 'n') ak = PK_NEXTDOC;
     else if (vk == 'P' || vk == 'p') ak = PK_PREVDOC;
+    else if (vk == 'M' || vk == 'm') ak = PK_BOOKMARK_SET;
+    else if (vk == 'J' || vk == 'j') ak = PK_BOOKMARK;
     if (ak != PK_NONE) {
       key_flush(p, ak, MOTE_FALSE, MOTE_FALSE);
       return;
@@ -286,7 +290,11 @@ static void ingest_key_event(Plat *p, KEY_EVENT_RECORD *ke) {
   case VK_NEXT: key_flush(p, PK_PGDN, MOTE_FALSE, shift); return;
   case VK_BACK: key_flush(p, PK_BACKSPACE, MOTE_FALSE, MOTE_FALSE); return;
   case VK_DELETE: key_flush(p, PK_DELETE, MOTE_FALSE, MOTE_FALSE); return;
-  case VK_RETURN: key_flush(p, PK_ENTER, MOTE_FALSE, MOTE_FALSE); return;
+  case VK_RETURN:
+    if (ctrl && shift) key_flush(p, PK_BOOKMARK_SET, MOTE_TRUE, MOTE_TRUE);
+    else if (ctrl) key_flush(p, PK_BOOKMARK, MOTE_TRUE, MOTE_FALSE);
+    else key_flush(p, PK_ENTER, MOTE_FALSE, MOTE_FALSE);
+    return;
   case VK_ESCAPE: key_flush(p, PK_ESCAPE, MOTE_FALSE, MOTE_FALSE); return;
   case VK_TAB: key_flush(p, PK_TAB, MOTE_FALSE, shift); return;
   case VK_F1: key_flush(p, PK_HELP, MOTE_FALSE, MOTE_FALSE); return;
