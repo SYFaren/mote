@@ -49,6 +49,15 @@ do
     ASSETS="$ASSETS $p"
   fi
 done
+# Cross / BSD / multi-arch flat names (mote-linux-arm64-console, mote-freebsd-amd64-x11, …)
+for p in "$FLAT"/mote-*-*-* "$FLAT"/mote-*-*-*.upx "$FLAT"/mote-*-*-*.exe "$FLAT"/mote-*-*-*.upx.exe; do
+  [ -f "$p" ] || continue
+  case "$(basename "$p")" in
+    mote-linux-x11*|mote-linux-wayland*|mote-linux-sdl*|mote-linux-console*|mote-linux-fbdev*|\
+    mote-windows-*|mote-dos*) continue ;;
+  esac
+  ASSETS="$ASSETS $p"
+done
 
 echo "=== plan ==="
 echo "  owner:     $OWNER"

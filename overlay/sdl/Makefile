@@ -24,22 +24,25 @@ endif
 
 .PHONY: all clean run pack
 
-all: build/mote
+all: $(MOTE_BUILDDIR)/mote
 
-build/mote: $(SRC) $(ROOT)/plat/platform.h ../soft/soft.h | build
+$(MOTE_BUILDDIR)/mote: $(SRC) $(ROOT)/plat/platform.h ../soft/soft.h | $(MOTE_BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
-pack: build/mote
+pack: $(MOTE_BUILDDIR)/mote
 	@command -v $(UPX_BIN) >/dev/null 2>&1 || { echo "UPX missing"; exit 1; }
-	cp -f build/mote build/mote.packed
-	env -u UPX $(UPX_BIN) --best --lzma -f build/mote.packed
-	ls -la build/mote build/mote.packed
+	cp -f $(MOTE_BUILDDIR)/mote $(MOTE_BUILDDIR)/mote.packed
+	env -u UPX $(UPX_BIN) --best --lzma -f $(MOTE_BUILDDIR)/mote.packed
+	ls -la $(MOTE_BUILDDIR)/mote $(MOTE_BUILDDIR)/mote.packed
 
-run: build/mote
-	./build/mote
+run: $(MOTE_BUILDDIR)/mote
+	./$(MOTE_BUILDDIR)/mote
 
-build:
-	mkdir -p build
+$(MOTE_BUILDDIR):
+	mkdir -p $(MOTE_BUILDDIR)
 
 clean:
-	rm -rf build
+	rm -rf $(MOTE_BUILDDIR)
+
+clean-all:
+	rm -rf build build-*

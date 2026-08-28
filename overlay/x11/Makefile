@@ -12,29 +12,32 @@ SRC = $(CORE) $(OV)
 
 INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat
 CFLAGS = -std=c99 -Wall -Wextra $(INCLUDES) $(MOTE_POSIX) $(MOTE_OPT) -fno-plt
-LDFLAGS = -lX11 $(MOTE_LD_OPT) -Wl,-z,norelro,-z,noseparate-code -fno-plt
+LDFLAGS = -lX11 $(MOTE_LD_OPT) -fno-plt
 
 .PHONY: all clean run test pack
 
-all: build/mote
+all: $(MOTE_BUILDDIR)/mote
 
-build/mote: $(SRC) $(ROOT)/plat/platform.h | build
+$(MOTE_BUILDDIR)/mote: $(SRC) $(ROOT)/plat/platform.h | $(MOTE_BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 test:
 	$(MAKE) -C $(ROOT) test
 
-pack: build/mote
+pack: $(MOTE_BUILDDIR)/mote
 	@command -v $(UPX_BIN) >/dev/null 2>&1 || { echo "UPX missing: $(UPX_BIN)"; exit 1; }
-	cp -f build/mote build/mote.packed
-	env -u UPX $(UPX_BIN) --best --lzma -f build/mote.packed
-	ls -la build/mote build/mote.packed
+	cp -f $(MOTE_BUILDDIR)/mote $(MOTE_BUILDDIR)/mote.packed
+	env -u UPX $(UPX_BIN) --best --lzma -f $(MOTE_BUILDDIR)/mote.packed
+	ls -la $(MOTE_BUILDDIR)/mote $(MOTE_BUILDDIR)/mote.packed
 
-run: build/mote
-	./build/mote
+run: $(MOTE_BUILDDIR)/mote
+	./$(MOTE_BUILDDIR)/mote
 
-build:
-	mkdir -p build
+$(MOTE_BUILDDIR):
+	mkdir -p $(MOTE_BUILDDIR)
 
 clean:
-	rm -rf build
+	rm -rf $(MOTE_BUILDDIR)
+
+clean-all:
+	rm -rf build build-*

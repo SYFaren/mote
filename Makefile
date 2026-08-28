@@ -1,8 +1,11 @@
 # mote — root Makefile
+# Project-local cross toolchains (~/.local/opt, see docs/BUILD.md)
+export PATH := $(HOME)/.local/opt/djgpp/bin:$(HOME)/.local/opt/emsdk/upstream/emscripten:$(HOME)/.local/opt/emsdk:$(PATH)
+
 .PHONY: all x11 win32 console winconsole dos sdl sdl3 wayland fbdev wasm \
 	test smoke clean pack \
-	dist release release-linux release-windows release-dos release-extra \
-	release-zip ansi-check
+	dist release release-linux release-cross-linux release-bsd release-windows release-dos release-extra \
+	release-zip ansi-check list-targets
 
 all: x11
 
@@ -88,24 +91,24 @@ define COPY_BIN
 endef
 
 release-linux: console x11 sdl wayland fbdev
-	@mkdir -p $(CAT)/linux/x11 $(CAT)/linux/console $(CAT)/linux/sdl2 \
-	  $(CAT)/linux/wayland $(CAT)/linux/fbdev $(DIST)/flat
+	@mkdir -p $(CAT)/linux/amd64/x11 $(CAT)/linux/amd64/console $(CAT)/linux/amd64/sdl2 \
+	  $(CAT)/linux/amd64/wayland $(CAT)/linux/amd64/fbdev $(DIST)/flat
 	@$(MAKE) -C overlay/x11 pack || true
 	@$(MAKE) -C overlay/console pack || true
 	@$(MAKE) -C overlay/sdl pack || true
 	@$(MAKE) -C overlay/wayland pack || true
 	@$(MAKE) -C overlay/fbdev pack || true
-	cp -f overlay/x11/build/mote $(CAT)/linux/x11/mote
-	cp -f overlay/console/build/mote $(CAT)/linux/console/mote
-	cp -f overlay/sdl/build/mote $(CAT)/linux/sdl2/mote
-	cp -f overlay/wayland/build/mote $(CAT)/linux/wayland/mote
-	cp -f overlay/fbdev/build/mote $(CAT)/linux/fbdev/mote
+	cp -f overlay/x11/build/mote $(CAT)/linux/amd64/x11/mote
+	cp -f overlay/console/build/mote $(CAT)/linux/amd64/console/mote
+	cp -f overlay/sdl/build/mote $(CAT)/linux/amd64/sdl2/mote
+	cp -f overlay/wayland/build/mote $(CAT)/linux/amd64/wayland/mote
+	cp -f overlay/fbdev/build/mote $(CAT)/linux/amd64/fbdev/mote
 	@for pair in \
-	  "overlay/x11/build/mote.packed:$(CAT)/linux/x11/mote.upx:$(DIST)/flat/mote-linux-x11.upx" \
-	  "overlay/console/build/mote.packed:$(CAT)/linux/console/mote.upx:$(DIST)/flat/mote-linux-console.upx" \
-	  "overlay/sdl/build/mote.packed:$(CAT)/linux/sdl2/mote.upx:$(DIST)/flat/mote-linux-sdl2.upx" \
-	  "overlay/wayland/build/mote.packed:$(CAT)/linux/wayland/mote.upx:$(DIST)/flat/mote-linux-wayland.upx" \
-	  "overlay/fbdev/build/mote.packed:$(CAT)/linux/fbdev/mote.upx:$(DIST)/flat/mote-linux-fbdev.upx"; do \
+	  "overlay/x11/build/mote.packed:$(CAT)/linux/amd64/x11/mote.upx:$(DIST)/flat/mote-linux-x11.upx" \
+	  "overlay/console/build/mote.packed:$(CAT)/linux/amd64/console/mote.upx:$(DIST)/flat/mote-linux-console.upx" \
+	  "overlay/sdl/build/mote.packed:$(CAT)/linux/amd64/sdl2/mote.upx:$(DIST)/flat/mote-linux-sdl2.upx" \
+	  "overlay/wayland/build/mote.packed:$(CAT)/linux/amd64/wayland/mote.upx:$(DIST)/flat/mote-linux-wayland.upx" \
+	  "overlay/fbdev/build/mote.packed:$(CAT)/linux/amd64/fbdev/mote.upx:$(DIST)/flat/mote-linux-fbdev.upx"; do \
 	  src=$${pair%%:*}; rest=$${pair#*:}; dst=$${rest%%:*}; flat=$${rest#*:}; \
 	  if [ -f "$$src" ]; then cp -f "$$src" "$$dst"; cp -f "$$src" "$$flat"; fi; \
 	done
@@ -114,42 +117,63 @@ release-linux: console x11 sdl wayland fbdev
 	cp -f overlay/sdl/build/mote $(DIST)/flat/mote-linux-sdl2
 	cp -f overlay/wayland/build/mote $(DIST)/flat/mote-linux-wayland
 	cp -f overlay/fbdev/build/mote $(DIST)/flat/mote-linux-fbdev
-	@printf '%s\n' "X11 GUI" > $(CAT)/linux/x11/README.txt
-	@printf '%s\n' "Unix TTY console" > $(CAT)/linux/console/README.txt
-	@printf '%s\n' "SDL2 GUI (also builds as SDL3 when MOTE_SDL3=1)" > $(CAT)/linux/sdl2/README.txt
-	@printf '%s\n' "Wayland (xdg-shell + wl_shm)" > $(CAT)/linux/wayland/README.txt
-	@printf '%s\n' "Linux framebuffer /dev/fb0" > $(CAT)/linux/fbdev/README.txt
+	cp -f overlay/x11/build/mote $(DIST)/flat/mote-linux-amd64-x11
+	cp -f overlay/console/build/mote $(DIST)/flat/mote-linux-amd64-console
+	cp -f overlay/sdl/build/mote $(DIST)/flat/mote-linux-amd64-sdl
+	cp -f overlay/wayland/build/mote $(DIST)/flat/mote-linux-amd64-wayland
+	cp -f overlay/fbdev/build/mote $(DIST)/flat/mote-linux-amd64-fbdev
+	@printf '%s\n' "Linux amd64 · X11 GUI" > $(CAT)/linux/amd64/x11/README.txt
+	@printf '%s\n' "Linux amd64 · Unix TTY console" > $(CAT)/linux/amd64/console/README.txt
+	@printf '%s\n' "Linux amd64 · SDL2 GUI" > $(CAT)/linux/amd64/sdl2/README.txt
+	@printf '%s\n' "Linux amd64 · Wayland (xdg-shell + wl_shm)" > $(CAT)/linux/amd64/wayland/README.txt
+	@printf '%s\n' "Linux amd64 · framebuffer /dev/fb0" > $(CAT)/linux/amd64/fbdev/README.txt
+	@printf '%s\n' "Linux x86_64 builds. Legacy flat names: mote-linux-x11, mote-linux-console, …" > $(CAT)/linux/amd64/README.txt
+
+release-cross-linux:
+	@sh scripts/release-cross-linux.sh
+
+release-bsd:
+	@sh scripts/release-bsd.sh
+
+list-targets:
+	@sh scripts/list-targets.sh
+
+verify-release:
+	@sh scripts/verify-release.sh
 
 release-windows: win32 winconsole
-	@mkdir -p $(CAT)/windows/gui $(CAT)/windows/console $(DIST)/flat
+	@mkdir -p $(CAT)/windows/amd64/gui $(CAT)/windows/amd64/console $(DIST)/flat
 	@$(MAKE) -C overlay/win32 pack || true
 	@$(MAKE) -C overlay/winconsole pack || true
-	cp -f overlay/win32/build/mote.exe $(CAT)/windows/gui/mote.exe
-	cp -f overlay/winconsole/build/mote.exe $(CAT)/windows/console/mote.exe
+	cp -f overlay/win32/build/mote.exe $(CAT)/windows/amd64/gui/mote.exe
+	cp -f overlay/winconsole/build/mote.exe $(CAT)/windows/amd64/console/mote.exe
 	cp -f overlay/win32/build/mote.exe $(DIST)/flat/mote-windows-gui.exe
 	cp -f overlay/winconsole/build/mote.exe $(DIST)/flat/mote-windows-console.exe
+	cp -f overlay/win32/build/mote.exe $(DIST)/flat/mote-windows-amd64-gui.exe
+	cp -f overlay/winconsole/build/mote.exe $(DIST)/flat/mote-windows-amd64-console.exe
 	@if [ -f overlay/win32/build/mote.packed.exe ]; then \
-	  cp -f overlay/win32/build/mote.packed.exe $(CAT)/windows/gui/mote.upx.exe; \
+	  cp -f overlay/win32/build/mote.packed.exe $(CAT)/windows/amd64/gui/mote.upx.exe; \
 	  cp -f overlay/win32/build/mote.packed.exe $(DIST)/flat/mote-windows-gui.upx.exe; fi
 	@if [ -f overlay/winconsole/build/mote.packed.exe ]; then \
-	  cp -f overlay/winconsole/build/mote.packed.exe $(CAT)/windows/console/mote.upx.exe; \
+	  cp -f overlay/winconsole/build/mote.packed.exe $(CAT)/windows/amd64/console/mote.upx.exe; \
 	  cp -f overlay/winconsole/build/mote.packed.exe $(DIST)/flat/mote-windows-console.upx.exe; fi
-	@printf '%s\n' "Windows GDI GUI" > $(CAT)/windows/gui/README.txt
-	@printf '%s\n' "Windows console host" > $(CAT)/windows/console/README.txt
+	@printf '%s\n' "Windows amd64 · GDI GUI" > $(CAT)/windows/amd64/gui/README.txt
+	@printf '%s\n' "Windows amd64 · console host" > $(CAT)/windows/amd64/console/README.txt
+	@printf '%s\n' "Windows x86_64. Legacy flat: mote-windows-gui.exe, mote-windows-console.exe" > $(CAT)/windows/amd64/README.txt
 
 release-dos:
-	@mkdir -p $(CAT)/dos $(DIST)/flat
+	@mkdir -p $(CAT)/dos/i686 $(DIST)/flat
 	@$(MAKE) -C overlay/dos all
 	@$(MAKE) -C overlay/dos pack || true
-	cp -f overlay/dos/build/mote.exe $(CAT)/dos/mote.exe
+	cp -f overlay/dos/build/mote.exe $(CAT)/dos/i686/mote.exe
 	cp -f overlay/dos/build/mote.exe $(DIST)/flat/mote-dos.exe
 	@if [ -f overlay/dos/runtime/CWSDPMI.EXE ]; then \
-	  cp -f overlay/dos/runtime/CWSDPMI.EXE $(CAT)/dos/CWSDPMI.EXE; \
-	  cp -f overlay/dos/runtime/README.txt $(CAT)/dos/CWSDPMI.txt; fi
+	  cp -f overlay/dos/runtime/CWSDPMI.EXE $(CAT)/dos/i686/CWSDPMI.EXE; \
+	  cp -f overlay/dos/runtime/README.txt $(CAT)/dos/i686/CWSDPMI.txt; fi
 	@if [ -f overlay/dos/build/mote.packed.exe ]; then \
-	  cp -f overlay/dos/build/mote.packed.exe $(CAT)/dos/mote.upx.exe; \
+	  cp -f overlay/dos/build/mote.packed.exe $(CAT)/dos/i686/mote.upx.exe; \
 	  cp -f overlay/dos/build/mote.packed.exe $(DIST)/flat/mote-dos.upx.exe; fi
-	@printf '%s\n' "FreeDOS / DOSBox (DJGPP). Keep CWSDPMI.EXE next to mote.exe." > $(CAT)/dos/README.txt
+	@printf '%s\n' "FreeDOS / DOSBox (DJGPP i586). Keep CWSDPMI.EXE next to mote.exe." > $(CAT)/dos/i686/README.txt
 
 release-extra:
 	@mkdir -p $(CAT)/web/wasm $(DIST)/flat
@@ -190,11 +214,11 @@ release-zip:
 	  "mote multi-platform release" \
 	  "" \
 	  "by-platform/" \
-	  "  linux/{x11,wayland,sdl2,sdl3?,console,fbdev}/" \
-	  "  windows/{gui,console}/" \
-	  "  dos/" \
+	  "  linux/<arch>/{console,x11,sdl2,wayland?,fbdev?}/" \
+	  "  windows/<arch>/{gui,console}/" \
+	  "  dos/i686/" \
 	  "  web/wasm/" \
-	  "flat/   — same binaries with stable GitHub asset names" \
+	  "flat/   — mote-<os>-<arch>-<backend> + legacy names (linux amd64)" \
 	  "" \
 	  "See README in each folder." > $(CAT)/README.txt
 	@cd $(DIST) && zip -r -q mote-all-platforms.zip by-platform flat SHA256SUMS 2>/dev/null || \
@@ -207,6 +231,8 @@ release:
 	@rm -f $(DIST)/mote-* $(DIST)/SHA256SUMS
 	@mkdir -p $(DIST)
 	@$(MAKE) release-linux release-windows
+	@$(MAKE) release-cross-linux || true
+	@case "$$(uname -s 2>/dev/null)" in FreeBSD|OpenBSD|NetBSD) $(MAKE) release-bsd ;; esac
 	@if command -v i586-pc-msdosdjgpp-gcc >/dev/null 2>&1; then \
 	  $(MAKE) release-dos; \
 	else echo "(skip DOS — no DJGPP on PATH)"; fi
@@ -215,6 +241,8 @@ release:
 	  shasum -a 256 * > ../SHA256SUMS)
 	@cp -f $(DIST)/SHA256SUMS $(DIST)/flat/SHA256SUMS
 	@$(MAKE) release-zip
+	@echo "=== restore native overlays (cross-build may have overwritten build/) ==="
+	@$(MAKE) console x11 sdl wayland fbdev >/dev/null
 	@echo "=== $(DIST) ===" && find $(DIST) -type f | sort
 
 dist: release

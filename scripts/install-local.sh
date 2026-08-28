@@ -4,6 +4,7 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 BIN="${HOME}/.local/bin"
+export PATH="${HOME}/.local/opt/djgpp/bin:${HOME}/.local/opt/emsdk/upstream/emscripten:${HOME}/.local/opt/emsdk:${PATH}"
 mkdir -p "$BIN"
 
 echo "== build =="
@@ -27,4 +28,4 @@ echo "Installed:"
 ls -la "$BIN/mote" "$BIN/mote-x11" 2>/dev/null || true
 "$BIN/mote" --version
 echo "Help check (console):"
-strings "$BIN/mote" | grep 'Alt+J mark' || echo "MISSING new help string!"
+strings "$BIN/mote" | grep 'F8/Alt+B set' || echo "MISSING new help string!"
