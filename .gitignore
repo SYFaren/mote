@@ -1,6 +1,7 @@
 # build outputs
 build/
 **/build/
+**/build-*/
 dist-release/*
 !dist-release/.gitkeep
 
