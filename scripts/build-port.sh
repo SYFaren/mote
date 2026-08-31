@@ -93,9 +93,13 @@ case "$BACKEND" in
         fbdev) cp -f "$OUT" "$FLAT/mote-linux-fbdev" ;;
       esac
     fi
-    "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" pack 2>/dev/null && \
+    UPX_BIN="${UPX_BIN:-$(command -v upx 2>/dev/null || echo "$HOME/.local/opt/upx/upx")}"
+    export UPX_BIN
+    if "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" UPX_BIN="$UPX_BIN" pack 2>/dev/null; then
       cp -f "$MK/$BDIR/mote.packed" "$CAT/$CAT_NAME/mote.upx" 2>/dev/null && \
-      cp -f "$MK/$BDIR/mote.packed" "$FLAT/$FLAT_NAME.upx" 2>/dev/null || true
+      cp -f "$MK/$BDIR/mote.packed" "$FLAT/$FLAT_NAME.upx" 2>/dev/null && \
+      echo "upx: $FLAT/$FLAT_NAME.upx"
+    fi
     printf '%s\n' "$OS $ARCH · $CAT_NAME" > "$CAT/$CAT_NAME/README.txt"
     echo "ok: $FLAT/$FLAT_NAME"
     ;;
