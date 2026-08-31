@@ -21,8 +21,17 @@ jobs:
           sudo dpkg --add-architecture arm64
           sudo dpkg --add-architecture armhf
           sudo dpkg --add-architecture riscv64
-          # Foreign arches (arm64/armhf/riscv64) live on ports.ubuntu.com, not security.ubuntu.com.
-          sudo sed -i -e '/^deb http/s/^deb /deb [arch=amd64,i386] /' /etc/apt/sources.list
+          # Ubuntu 24.04+ DEB822 sources fetch foreign arches from security.ubuntu.com (404).
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo mv /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.bak
+          fi
+          sudo truncate -s 0 /etc/apt/sources.list
+          printf '%s\n' \
+            'deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse' \
+            'deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse' \
+            'deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse' \
+            'deb [arch=amd64,i386] http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse' \
+            | sudo tee /etc/apt/sources.list.d/ubuntu-native.list >/dev/null
           printf '%s\n' \
             'deb [arch=arm64,armhf,riscv64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse' \
             'deb [arch=arm64,armhf,riscv64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse' \
