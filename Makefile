@@ -4,7 +4,7 @@ export PATH := $(HOME)/.local/opt/djgpp/bin:$(HOME)/.local/opt/emsdk/upstream/em
 
 .PHONY: all x11 win32 console winconsole dos sdl sdl3 wayland fbdev wasm \
 	test smoke clean pack \
-	dist release release-linux release-cross-linux release-bsd release-macos release-windows release-dos release-extra \
+	dist release release-linux release-cross-linux release-musl-linux release-bsd release-macos release-windows release-dos release-extra \
 	release-zip ansi-check verify-release
 
 all: x11
@@ -104,13 +104,13 @@ release-linux: console x11 sdl wayland fbdev
 	cp -f overlay/wayland/build/mote $(CAT)/linux/amd64/wayland/mote
 	cp -f overlay/fbdev/build/mote $(CAT)/linux/amd64/fbdev/mote
 	@for pair in \
-	  "overlay/x11/build/mote.packed:$(CAT)/linux/amd64/x11/mote.upx:$(DIST)/flat/mote-linux-x11.upx" \
-	  "overlay/console/build/mote.packed:$(CAT)/linux/amd64/console/mote.upx:$(DIST)/flat/mote-linux-console.upx" \
-	  "overlay/sdl/build/mote.packed:$(CAT)/linux/amd64/sdl2/mote.upx:$(DIST)/flat/mote-linux-sdl2.upx" \
-	  "overlay/wayland/build/mote.packed:$(CAT)/linux/amd64/wayland/mote.upx:$(DIST)/flat/mote-linux-wayland.upx" \
-	  "overlay/fbdev/build/mote.packed:$(CAT)/linux/amd64/fbdev/mote.upx:$(DIST)/flat/mote-linux-fbdev.upx"; do \
-	  src=$${pair%%:*}; rest=$${pair#*:}; dst=$${rest%%:*}; flat=$${rest#*:}; \
-	  if [ -f "$$src" ]; then cp -f "$$src" "$$dst"; cp -f "$$src" "$$flat"; fi; \
+	  "overlay/x11/build/mote.packed:$(CAT)/linux/amd64/x11/mote.upx:$(DIST)/flat/mote-linux-x11.upx:$(DIST)/flat/mote-linux-amd64-x11.upx" \
+	  "overlay/console/build/mote.packed:$(CAT)/linux/amd64/console/mote.upx:$(DIST)/flat/mote-linux-console.upx:$(DIST)/flat/mote-linux-amd64-console.upx" \
+	  "overlay/sdl/build/mote.packed:$(CAT)/linux/amd64/sdl2/mote.upx:$(DIST)/flat/mote-linux-sdl2.upx:$(DIST)/flat/mote-linux-amd64-sdl.upx" \
+	  "overlay/wayland/build/mote.packed:$(CAT)/linux/amd64/wayland/mote.upx:$(DIST)/flat/mote-linux-wayland.upx:$(DIST)/flat/mote-linux-amd64-wayland.upx" \
+	  "overlay/fbdev/build/mote.packed:$(CAT)/linux/amd64/fbdev/mote.upx:$(DIST)/flat/mote-linux-fbdev.upx:$(DIST)/flat/mote-linux-amd64-fbdev.upx"; do \
+	  src=$${pair%%:*}; rest=$${pair#*:}; dst=$${rest%%:*}; rest2=$${rest#*:}; flat=$${rest2%%:*}; flat2=$${rest2#*:}; \
+	  if [ -f "$$src" ]; then cp -f "$$src" "$$dst" "$$flat" "$$flat2"; fi; \
 	done
 	cp -f overlay/x11/build/mote $(DIST)/flat/mote-linux-x11
 	cp -f overlay/console/build/mote $(DIST)/flat/mote-linux-console
@@ -131,6 +131,9 @@ release-linux: console x11 sdl wayland fbdev
 
 release-cross-linux:
 	@sh scripts/release-cross-linux.sh
+
+release-musl-linux:
+	@sh scripts/release-musl-linux.sh
 
 release-bsd:
 	@sh scripts/release-bsd.sh
@@ -153,10 +156,12 @@ release-windows: win32 winconsole
 	cp -f overlay/winconsole/build/mote.exe $(DIST)/flat/mote-windows-amd64-console.exe
 	@if [ -f overlay/win32/build/mote.packed.exe ]; then \
 	  cp -f overlay/win32/build/mote.packed.exe $(CAT)/windows/amd64/gui/mote.upx.exe; \
-	  cp -f overlay/win32/build/mote.packed.exe $(DIST)/flat/mote-windows-gui.upx.exe; fi
+	  cp -f overlay/win32/build/mote.packed.exe $(DIST)/flat/mote-windows-gui.upx.exe; \
+	  cp -f overlay/win32/build/mote.packed.exe $(DIST)/flat/mote-windows-amd64-gui.upx.exe; fi
 	@if [ -f overlay/winconsole/build/mote.packed.exe ]; then \
 	  cp -f overlay/winconsole/build/mote.packed.exe $(CAT)/windows/amd64/console/mote.upx.exe; \
-	  cp -f overlay/winconsole/build/mote.packed.exe $(DIST)/flat/mote-windows-console.upx.exe; fi
+	  cp -f overlay/winconsole/build/mote.packed.exe $(DIST)/flat/mote-windows-console.upx.exe; \
+	  cp -f overlay/winconsole/build/mote.packed.exe $(DIST)/flat/mote-windows-amd64-console.upx.exe; fi
 	@printf '%s\n' "Windows amd64 · GDI GUI" > $(CAT)/windows/amd64/gui/README.txt
 	@printf '%s\n' "Windows amd64 · console host" > $(CAT)/windows/amd64/console/README.txt
 	@printf '%s\n' "Windows x86_64. Legacy flat: mote-windows-gui.exe, mote-windows-console.exe" > $(CAT)/windows/amd64/README.txt
@@ -232,6 +237,7 @@ release:
 	@mkdir -p $(DIST)
 	@$(MAKE) release-linux release-windows
 	@$(MAKE) release-cross-linux || true
+	@$(MAKE) release-musl-linux || true
 	@case "$$(uname -s 2>/dev/null)" in FreeBSD|OpenBSD|NetBSD) $(MAKE) release-bsd ;; esac
 	@if command -v i586-pc-msdosdjgpp-gcc >/dev/null 2>&1; then \
 	  $(MAKE) release-dos; \

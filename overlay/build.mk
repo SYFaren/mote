@@ -36,12 +36,18 @@ endif
 
 # Separate output dir for cross-builds so native build/ is not overwritten.
 MOTE_BUILDDIR ?= build
+ifneq ($(MOTE_LIBC),musl)
 ifeq ($(MOTE_OS),linux)
 ifneq ($(filter-out amd64,$(MOTE_ARCH)),)
 MOTE_BUILDDIR := build-$(MOTE_OS)-$(MOTE_ARCH)
 endif
 else
+ifneq ($(MOTE_OS),linux)
 MOTE_BUILDDIR := build-$(MOTE_OS)-$(MOTE_ARCH)
+endif
+endif
+else
+MOTE_BUILDDIR := build-$(MOTE_OS)-$(MOTE_ARCH)-musl
 endif
 
 MOTE_OPT = -Oz -DNDEBUG \
@@ -55,6 +61,9 @@ MOTE_OPT = -Oz -DNDEBUG \
 ifeq ($(MOTE_OS),macos)
 MOTE_POSIX = -D_DARWIN_C_SOURCE
 MOTE_PLT =
+else ifeq ($(MOTE_LIBC),musl)
+MOTE_POSIX = -D_DEFAULT_SOURCE
+MOTE_PLT =
 else ifeq ($(MOTE_OS),linux)
 MOTE_POSIX = -D_DEFAULT_SOURCE
 MOTE_PLT = -fno-plt
@@ -64,7 +73,10 @@ MOTE_POSIX = -D_BSD_SOURCE
 MOTE_PLT =
 endif
 
-ifeq ($(MOTE_OS),linux)
+ifeq ($(MOTE_LIBC),musl)
+MOTE_LD_OPT = -Oz -flto -static -Wl,--gc-sections -s
+MOTE_OPT += -DMOTE_MUSL=1
+else ifeq ($(MOTE_OS),linux)
 MOTE_LD_GNU = -Wl,-z,norelro,-z,noseparate-code
 MOTE_LD_OPT = -Oz -flto \
 	-Wl,--gc-sections,--as-needed,-s,--build-id=none \
@@ -78,6 +90,8 @@ endif
 
 ifeq ($(MOTE_STATIC),1)
 ifneq ($(MOTE_OS),macos)
+ifneq ($(MOTE_LIBC),musl)
 MOTE_LD_OPT += -static
+endif
 endif
 endif

@@ -22,7 +22,8 @@ Quality gate: `make ansi-check && make test && make smoke`
 ```sh
 make release              # everything this host can build
 make release-linux        # linux amd64 backends
-make release-cross-linux  # linux arm/i686/riscv64 + windows i686
+make release-cross-linux  # linux glibc cross (arm/i686/riscv64 + windows i686)
+make release-musl-linux   # linux musl static console (all arches)
 make release-bsd          # on FreeBSD / OpenBSD / NetBSD only
 make release-macos        # on macOS only
 make verify-release       # smoke-test dist-release/flat
@@ -43,9 +44,11 @@ Single port: `sh scripts/build-port.sh <os> <arch> <backend>`
 
 | OS | arch | backends in release |
 |----|------|---------------------|
-| linux | amd64 | console, x11, sdl2, wayland, fbdev |
-| linux | arm64, armhf, i686 | console, x11, sdl2 |
-| linux | riscv64 | console |
+| linux | amd64 | console, x11, sdl2, wayland, fbdev | glibc |
+| linux | amd64 | console, fbdev | **musl** (static) |
+| linux | arm64, armhf, i686 | console, x11, sdl2 | glibc cross |
+| linux | arm64, armhf, i686, riscv64 | console | **musl** static cross (Bootlin in CI, musl.cc locally) |
+| linux | riscv64 | console, x11, sdl2 | glibc cross (x11/sdl if multiarch libs present) |
 | macos | amd64, arm64 | console, sdl2 |
 | freebsd | amd64, arm64 | console, x11, sdl2 |
 | openbsd | amd64 | console, x11, sdl2 |

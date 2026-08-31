@@ -5,6 +5,10 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -13,20 +17,49 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UPX_BIN: /usr/bin/upx
+      MUSL_CROSS_BACKEND: bootlin
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.local/opt/musl-cross
+          key: musl-cross-bootlin-2024.05-1-${{ hashFiles('scripts/install-musl-cross.sh', 'scripts/targets.sh') }}
+          restore-keys: musl-cross-bootlin-
       - name: Dependencies
         run: |
+          sudo dpkg --add-architecture i386
+          sudo dpkg --add-architecture arm64
+          sudo dpkg --add-architecture armhf
+          sudo dpkg --add-architecture riscv64
+          # Ubuntu 24.04+ DEB822 sources fetch foreign arches from security.ubuntu.com (404).
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo mv /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.bak
+          fi
+          sudo truncate -s 0 /etc/apt/sources.list
+          printf '%s\n' \
+            'deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse' \
+            'deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse' \
+            'deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse' \
+            'deb [arch=amd64,i386] http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse' \
+            | sudo tee /etc/apt/sources.list.d/ubuntu-native.list >/dev/null
+          printf '%s\n' \
+            'deb [arch=arm64,armhf,riscv64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse' \
+            'deb [arch=arm64,armhf,riscv64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse' \
+            'deb [arch=arm64,armhf,riscv64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse' \
+            | sudo tee /etc/apt/sources.list.d/ubuntu-ports.list >/dev/null
           sudo apt-get update
-          sudo apt-get install -y build-essential libx11-dev libsdl2-dev \
+          sudo apt-get install -y build-essential musl-tools musl-dev libx11-dev libsdl2-dev \
             libwayland-dev wayland-protocols libxkbcommon-dev \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf gcc-i686-linux-gnu \
             gcc-riscv64-linux-gnu gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
-            qemu-user-static zip pkg-config upx-ucl
-      - name: Build Linux + Windows + cross
+            libx11-dev:arm64 libx11-dev:armhf libx11-dev:i386 libx11-dev:riscv64 \
+            libsdl2-dev:arm64 libsdl2-dev:armhf libsdl2-dev:i386 libsdl2-dev:riscv64 \
+            qemu-user-static zip pkg-config upx-ucl curl
+      - name: Build Linux + Windows + cross + musl
         run: |
           make release-linux release-windows
           make release-cross-linux || true
+          make release-musl-linux
           make release-dos || true
           make release-extra || true
       - name: Upload
@@ -103,7 +136,7 @@ jobs:
 
   merge:
     needs: [linux, macos, freebsd, openbsd]
-    if: always() && !cancelled() && (needs.linux.result != 'cancelled')
+    if: always() && !cancelled() && needs.linux.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -144,6 +177,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          draft: false
+          make_latest: true
+          overwrite_files: true
           files: |
             dist-release/mote-all-platforms.zip
             dist-release/SHA256SUMS

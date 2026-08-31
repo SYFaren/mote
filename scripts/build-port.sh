@@ -13,28 +13,90 @@ ARCH="${2:?arch (amd64 i686 arm64 armhf riscv64)}"
 BACKEND="${3:?backend (console x11 sdl wayland fbdev gui winconsole dos wasm)}"
 
 DIST="$ROOT/dist-release"
-CAT="$DIST/by-platform/$OS/$ARCH"
+LIBC="${MOTE_LIBC:-glibc}"
+if [ "$LIBC" = musl ] && [ "$OS" = linux ]; then
+  CAT="$DIST/by-platform/$OS/${ARCH}-musl"
+else
+  CAT="$DIST/by-platform/$OS/$ARCH"
+fi
 FLAT="$DIST/flat"
 
 mkdir -p "$CAT" "$FLAT"
+
+# Copy UPX-packed binary to by-platform + flat (and optional legacy flat names).
+publish_upx() {
+  _packed="$1"
+  _flat_name="$2"
+  shift 2
+  [ -f "$_packed" ] || return 1
+  cp -f "$_packed" "$CAT/$CAT_NAME/mote.upx"
+  cp -f "$_packed" "$FLAT/${_flat_name}.upx"
+  echo "upx: $FLAT/${_flat_name}.upx"
+  for _alias in "$@"; do
+    cp -f "$_packed" "$FLAT/${_alias}.upx"
+    echo "upx: $FLAT/${_alias}.upx"
+  done
+}
+
+try_overlay_pack() {
+  UPX_BIN="${UPX_BIN:-$(command -v upx 2>/dev/null || echo "$HOME/.local/opt/upx/upx")}"
+  export UPX_BIN
+  if "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" MOTE_LIBC="$LIBC" UPX_BIN="$UPX_BIN" pack; then
+    publish_upx "$MK/$BDIR/mote.packed" "$FLAT_NAME" "$@"
+  else
+    echo "upx: skip $FLAT_NAME (pack failed)" >&2
+  fi
+}
 
 # shellcheck source=targets.sh
 . "$ROOT/scripts/targets.sh"
 # shellcheck source=ci-host.sh
 . "$ROOT/scripts/ci-host.sh"
 
-CROSS="$(target_cross "$OS" "$ARCH")" || exit 1
-CC="$(target_cc "$CROSS")"
+CROSS=""
+if [ "$LIBC" = musl ] && [ "$OS" = linux ]; then
+  case "$BACKEND" in
+    console|fbdev) ;;
+    *)
+      echo "musl: skip $BACKEND (static console/fbdev only)" >&2
+      exit 0
+      ;;
+  esac
+  CROSS="$(target_musl_cross "$ARCH")" || exit 1
+  if [ -z "$CROSS" ]; then
+    command -v musl-gcc >/dev/null 2>&1 || {
+      echo "error: musl-gcc not found (musl-tools)" >&2
+      exit 1
+    }
+    CC=musl-gcc
+  else
+    CC="$(target_cc "$CROSS")"
+    command -v "$CC" >/dev/null 2>&1 || {
+      echo "error: $CC not found (run install-musl-cross.sh $ARCH)" >&2
+      exit 1
+    }
+  fi
+else
+  CROSS="$(target_cross "$OS" "$ARCH")" || exit 1
+  CC="$(target_cc "$CROSS")"
+fi
 MAKE="$(target_make)"
 export CC
 export MAKE
-export PATH="${HOME}/.local/opt/djgpp/bin:${HOME}/.local/opt/emsdk/upstream/emscripten:${HOME}/.local/opt/emsdk:${PATH}"
+export MOTE_LIBC="$LIBC"
+MUSL_CROSS_ROOT="${MUSL_CROSS_ROOT:-$HOME/.local/opt/musl-cross}"
+_extra_path="${HOME}/.local/opt/djgpp/bin:${HOME}/.local/opt/emsdk/upstream/emscripten:${HOME}/.local/opt/emsdk"
+if [ "$LIBC" = musl ] && [ "$OS" = linux ] && [ -n "$CROSS" ]; then
+  _mdir="$(target_musl_cross_dir "$ARCH")"
+  _extra_path="${MUSL_CROSS_ROOT}/${_mdir}/bin:${_extra_path}"
+fi
+export PATH="${_extra_path}:${PATH}"
 
 MOTE_OS="$OS"
 MOTE_ARCH="$ARCH"
 export MOTE_OS MOTE_ARCH
 
-if [ -n "$CROSS" ] && [ "$OS" = linux ]; then
+if [ -n "$CROSS" ] && [ "$OS" = linux ] && [ "$LIBC" != musl ]; then
   PKGDIR="$(target_pkglibdir "$ARCH")"
   if [ -n "$PKGDIR" ]; then
     export PKG_CONFIG_LIBDIR="$PKGDIR"
@@ -75,20 +137,31 @@ case "$BACKEND" in
     if [ "$OS" = freebsd ] || [ "$OS" = openbsd ] || [ "$OS" = netbsd ]; then
       [ "$BACKEND" = console ] && STATIC=MOTE_STATIC=1
     fi
-    "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" $STATIC all
-    if [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
+    "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" MOTE_LIBC="$LIBC" $STATIC all
+    if [ "$LIBC" = musl ]; then
+      BDIR="build-$OS-$ARCH-musl"
+    elif [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
       BDIR=build
     else
       BDIR="build-$OS-$ARCH"
     fi
     OUT="$MK/$BDIR/mote"
-    FLAT_NAME="mote-$OS-$ARCH-$BACKEND"
+    if [ "$LIBC" = musl ]; then
+      FLAT_NAME="mote-$OS-$ARCH-musl-$BACKEND"
+    else
+      FLAT_NAME="mote-$OS-$ARCH-$BACKEND"
+    fi
     CAT_NAME="$BACKEND"
     [ "$BACKEND" = sdl ] && CAT_NAME=sdl2
     mkdir -p "$CAT/$CAT_NAME"
     cp -f "$OUT" "$CAT/$CAT_NAME/mote"
     cp -f "$OUT" "$FLAT/$FLAT_NAME"
-    if [ "$OS" = linux ] && [ "$ARCH" = amd64 ] ]; then
+    if [ "$LIBC" = musl ] && [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
+      case "$BACKEND" in
+        console) cp -f "$OUT" "$FLAT/mote-linux-musl-console" ;;
+        fbdev) cp -f "$OUT" "$FLAT/mote-linux-musl-fbdev" ;;
+      esac
+    elif [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
       case "$BACKEND" in
         console) cp -f "$OUT" "$FLAT/mote-linux-console" ;;
         x11) cp -f "$OUT" "$FLAT/mote-linux-x11" ;;
@@ -97,14 +170,27 @@ case "$BACKEND" in
         fbdev) cp -f "$OUT" "$FLAT/mote-linux-fbdev" ;;
       esac
     fi
-    UPX_BIN="${UPX_BIN:-$(command -v upx 2>/dev/null || echo "$HOME/.local/opt/upx/upx")}"
-    export UPX_BIN
-    if "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" UPX_BIN="$UPX_BIN" pack 2>/dev/null; then
-      cp -f "$MK/$BDIR/mote.packed" "$CAT/$CAT_NAME/mote.upx" 2>/dev/null && \
-      cp -f "$MK/$BDIR/mote.packed" "$FLAT/$FLAT_NAME.upx" 2>/dev/null && \
-      echo "upx: $FLAT/$FLAT_NAME.upx"
+    _upx_aliases=""
+    if [ "$LIBC" = musl ] && [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
+      case "$BACKEND" in
+        console) _upx_aliases="mote-linux-musl-console" ;;
+        fbdev) _upx_aliases="mote-linux-musl-fbdev" ;;
+      esac
+    elif [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
+      case "$BACKEND" in
+        console) _upx_aliases="mote-linux-console" ;;
+        x11) _upx_aliases="mote-linux-x11" ;;
+        sdl) _upx_aliases="mote-linux-sdl2" ;;
+        wayland) _upx_aliases="mote-linux-wayland" ;;
+        fbdev) _upx_aliases="mote-linux-fbdev" ;;
+      esac
     fi
-    printf '%s\n' "$OS $ARCH · $CAT_NAME" > "$CAT/$CAT_NAME/README.txt"
+    if [ -n "$_upx_aliases" ]; then
+      try_overlay_pack "$_upx_aliases"
+    else
+      try_overlay_pack
+    fi
+    printf '%s\n' "$OS $ARCH ${LIBC} · $CAT_NAME" > "$CAT/$CAT_NAME/README.txt"
     echo "ok: $FLAT/$FLAT_NAME"
     ;;
   gui)
@@ -116,9 +202,19 @@ case "$BACKEND" in
     cp -f "$ROOT/overlay/win32/build/mote.exe" "$CAT/gui/mote.exe"
     cp -f "$ROOT/overlay/win32/build/mote.exe" "$FLAT/mote-$OS-$ARCH-gui.exe"
     [ "$ARCH" = amd64 ] && cp -f "$ROOT/overlay/win32/build/mote.exe" "$FLAT/mote-windows-gui.exe"
-    "$MAKE" -C "$ROOT/overlay/win32" pack 2>/dev/null && \
-      cp -f "$ROOT/overlay/win32/build/mote.packed.exe" "$CAT/gui/mote.upx.exe" 2>/dev/null && \
-      cp -f "$ROOT/overlay/win32/build/mote.packed.exe" "$FLAT/mote-$OS-$ARCH-gui.upx.exe" 2>/dev/null || true
+    UPX_BIN="${UPX_BIN:-$(command -v upx 2>/dev/null || echo "$HOME/.local/opt/upx/upx")}"
+    export UPX_BIN
+    if "$MAKE" -C "$ROOT/overlay/win32" WINCC="$WINCC" UPX_BIN="$UPX_BIN" pack; then
+      cp -f "$ROOT/overlay/win32/build/mote.packed.exe" "$CAT/gui/mote.upx.exe"
+      cp -f "$ROOT/overlay/win32/build/mote.packed.exe" "$FLAT/mote-$OS-$ARCH-gui.upx.exe"
+      echo "upx: $FLAT/mote-$OS-$ARCH-gui.upx.exe"
+      if [ "$ARCH" = amd64 ]; then
+        cp -f "$ROOT/overlay/win32/build/mote.packed.exe" "$FLAT/mote-windows-gui.upx.exe"
+        echo "upx: $FLAT/mote-windows-gui.upx.exe"
+      fi
+    else
+      echo "upx: skip mote-$OS-$ARCH-gui (pack failed)" >&2
+    fi
     printf '%s\n' "$OS $ARCH · GDI GUI" > "$CAT/gui/README.txt"
     echo "ok: $FLAT/mote-$OS-$ARCH-gui.exe"
     ;;
@@ -131,6 +227,19 @@ case "$BACKEND" in
     cp -f "$ROOT/overlay/winconsole/build/mote.exe" "$CAT/console/mote.exe"
     cp -f "$ROOT/overlay/winconsole/build/mote.exe" "$FLAT/mote-$OS-$ARCH-console.exe"
     [ "$ARCH" = amd64 ] && cp -f "$ROOT/overlay/winconsole/build/mote.exe" "$FLAT/mote-windows-console.exe"
+    UPX_BIN="${UPX_BIN:-$(command -v upx 2>/dev/null || echo "$HOME/.local/opt/upx/upx")}"
+    export UPX_BIN
+    if "$MAKE" -C "$ROOT/overlay/winconsole" WINCC="$WINCC" UPX_BIN="$UPX_BIN" pack; then
+      cp -f "$ROOT/overlay/winconsole/build/mote.packed.exe" "$CAT/console/mote.upx.exe"
+      cp -f "$ROOT/overlay/winconsole/build/mote.packed.exe" "$FLAT/mote-$OS-$ARCH-console.upx.exe"
+      echo "upx: $FLAT/mote-$OS-$ARCH-console.upx.exe"
+      if [ "$ARCH" = amd64 ]; then
+        cp -f "$ROOT/overlay/winconsole/build/mote.packed.exe" "$FLAT/mote-windows-console.upx.exe"
+        echo "upx: $FLAT/mote-windows-console.upx.exe"
+      fi
+    else
+      echo "upx: skip mote-$OS-$ARCH-console (pack failed)" >&2
+    fi
     printf '%s\n' "$OS $ARCH · console host" > "$CAT/console/README.txt"
     echo "ok: $FLAT/mote-$OS-$ARCH-console.exe"
     ;;
