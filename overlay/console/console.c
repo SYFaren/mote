@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #ifdef __linux__
-#if defined(__MUSL__)
+#if defined(MOTE_MUSL)
 /* musl-gcc: no glibc linux/kd.h — ioctl numbers are stable. */
 #define KDGKBMODE 0x4B44
 #define KDSKBMODE 0x4B45

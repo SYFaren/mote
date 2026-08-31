@@ -75,6 +75,7 @@ endif
 
 ifeq ($(MOTE_LIBC),musl)
 MOTE_LD_OPT = -Oz -flto -static -Wl,--gc-sections -s
+MOTE_OPT += -DMOTE_MUSL=1
 else ifeq ($(MOTE_OS),linux)
 MOTE_LD_GNU = -Wl,-z,norelro,-z,noseparate-code
 MOTE_LD_OPT = -Oz -flto \
