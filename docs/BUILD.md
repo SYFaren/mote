@@ -47,7 +47,7 @@ Single port: `sh scripts/build-port.sh <os> <arch> <backend>`
 | linux | amd64 | console, x11, sdl2, wayland, fbdev | glibc |
 | linux | amd64 | console, fbdev | **musl** (static) |
 | linux | arm64, armhf, i686 | console, x11, sdl2 | glibc cross |
-| linux | arm64, armhf, i686, riscv64 | console | **musl** static cross |
+| linux | arm64, armhf, i686, riscv64 | console | **musl** static cross (Bootlin in CI, musl.cc locally) |
 | linux | riscv64 | console, x11, sdl2 | glibc cross (x11/sdl if multiarch libs present) |
 | macos | amd64, arm64 | console, sdl2 |
 | freebsd | amd64, arm64 | console, x11, sdl2 |

@@ -13,8 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UPX_BIN: /usr/bin/upx
+      MUSL_CROSS_BACKEND: bootlin
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.local/opt/musl-cross
+          key: musl-cross-bootlin-2024.05-1-${{ hashFiles('scripts/install-musl-cross.sh', 'scripts/targets.sh') }}
+          restore-keys: musl-cross-bootlin-
       - name: Dependencies
         run: |
           sudo dpkg --add-architecture i386

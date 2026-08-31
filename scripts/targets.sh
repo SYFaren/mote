@@ -53,34 +53,57 @@ target_cross() {
   esac
 }
 
-# musl.cc cross prefix (see scripts/install-musl-cross.sh).
+# musl cross compiler prefix (musl.cc or Bootlin — see install-musl-cross.sh).
 target_musl_cross() {
   arch="$1"
-  case "$arch" in
-    amd64)   printf '' ;;
-    arm64)   printf 'aarch64-linux-musl-' ;;
-    armhf)   printf 'armv7l-linux-musleabihf-' ;;
-    i686)    printf 'i686-linux-musl-' ;;
-    riscv64) printf 'riscv64-linux-musl-' ;;
+  case "${MUSL_CROSS_BACKEND:-musl.cc}" in
+    bootlin)
+      case "$arch" in
+        amd64)   printf '' ;;
+        arm64)   printf 'aarch64-linux-' ;;
+        armhf)   printf 'arm-linux-' ;;
+        i686)    printf 'i686-linux-' ;;
+        riscv64) printf 'riscv64-linux-' ;;
+        *) return 1 ;;
+      esac
+      ;;
     *)
-      echo "error: unsupported musl arch $arch" >&2
-      return 1
+      case "$arch" in
+        amd64)   printf '' ;;
+        arm64)   printf 'aarch64-linux-musl-' ;;
+        armhf)   printf 'armv7l-linux-musleabihf-' ;;
+        i686)    printf 'i686-linux-musl-' ;;
+        riscv64) printf 'riscv64-linux-musl-' ;;
+        *) return 1 ;;
+      esac
       ;;
   esac
 }
 
-# Directory name under ~/.local/opt/musl-cross after install-musl-cross.sh.
+# Directory under ~/.local/opt/musl-cross after install-musl-cross.sh.
 target_musl_cross_dir() {
   arch="$1"
-  case "$arch" in
-    amd64)   printf '' ;;
-    arm64)   printf 'aarch64-linux-musl-cross' ;;
-    armhf)   printf 'armv7l-linux-musleabihf-cross' ;;
-    i686)    printf 'i686-linux-musl-cross' ;;
-    riscv64) printf 'riscv64-linux-musl-cross' ;;
+  ver="${BOOTLIN_VERSION:-2024.05-1}"
+  case "${MUSL_CROSS_BACKEND:-musl.cc}" in
+    bootlin)
+      case "$arch" in
+        amd64)   printf '' ;;
+        arm64)   printf 'aarch64--musl--stable-%s' "$ver" ;;
+        armhf)   printf 'armv7-eabihf--musl--stable-%s' "$ver" ;;
+        i686)    printf 'x86-i686--musl--stable-%s' "$ver" ;;
+        riscv64) printf 'riscv64--musl--stable-%s' "$ver" ;;
+        *) return 1 ;;
+      esac
+      ;;
     *)
-      echo "error: unsupported musl arch $arch" >&2
-      return 1
+      case "$arch" in
+        amd64)   printf '' ;;
+        arm64)   printf 'aarch64-linux-musl-cross' ;;
+        armhf)   printf 'armv7l-linux-musleabihf-cross' ;;
+        i686)    printf 'i686-linux-musl-cross' ;;
+        riscv64) printf 'riscv64-linux-musl-cross' ;;
+        *) return 1 ;;
+      esac
       ;;
   esac
 }

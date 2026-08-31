@@ -12,6 +12,14 @@ build_musl() {
   arch="$1"
   backend="$2"
   if [ "$arch" != amd64 ]; then
+    if [ "${MUSL_CROSS_BACKEND:-auto}" = auto ]; then
+      if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        MUSL_CROSS_BACKEND=bootlin
+      else
+        MUSL_CROSS_BACKEND=musl.cc
+      fi
+      export MUSL_CROSS_BACKEND
+    fi
     sh "$ROOT/scripts/install-musl-cross.sh" "$arch"
     dir="$(target_musl_cross_dir "$arch")"
     PATH="$MUSL_CROSS_ROOT/$dir/bin:$PATH" MOTE_LIBC=musl sh "$ROOT/scripts/build-port.sh" linux "$arch" "$backend"

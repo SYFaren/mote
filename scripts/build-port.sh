@@ -59,7 +59,13 @@ MAKE="$(target_make)"
 export CC
 export MAKE
 export MOTE_LIBC="$LIBC"
-export PATH="${HOME}/.local/opt/djgpp/bin:${HOME}/.local/opt/emsdk/upstream/emscripten:${HOME}/.local/opt/emsdk:${HOME}/.local/opt/musl-cross/aarch64-linux-musl-cross/bin:${HOME}/.local/opt/musl-cross/armv7l-linux-musleabihf-cross/bin:${HOME}/.local/opt/musl-cross/i686-linux-musl-cross/bin:${HOME}/.local/opt/musl-cross/riscv64-linux-musl-cross/bin:${PATH}"
+MUSL_CROSS_ROOT="${MUSL_CROSS_ROOT:-$HOME/.local/opt/musl-cross}"
+_extra_path="${HOME}/.local/opt/djgpp/bin:${HOME}/.local/opt/emsdk/upstream/emscripten:${HOME}/.local/opt/emsdk"
+if [ "$LIBC" = musl ] && [ "$OS" = linux ] && [ -n "$CROSS" ]; then
+  _mdir="$(target_musl_cross_dir "$ARCH")"
+  _extra_path="${MUSL_CROSS_ROOT}/${_mdir}/bin:${_extra_path}"
+fi
+export PATH="${_extra_path}:${PATH}"
 
 MOTE_OS="$OS"
 MOTE_ARCH="$ARCH"
