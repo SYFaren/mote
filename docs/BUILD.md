@@ -1,55 +1,56 @@
-# Build & platforms
+# Build
 
-## Matrix
+## Overlays
 
-| Product | Host build | Notes |
-|---------|------------|--------|
+| Target | Command | Deps |
+|--------|---------|------|
 | Linux X11 | `make x11` | `libx11-dev` |
 | Linux Wayland | `make wayland` | `libwayland-dev`, `libxkbcommon-dev`, `wayland-protocols` |
 | Linux SDL2 | `make sdl` | `libsdl2-dev` |
-| Linux SDL3 | `make sdl3` | needs `pkg-config sdl3` |
-| Linux fbdev | `make fbdev` | `/dev/fb0` (often needs permissions) |
-| Unix console | `make console` | real TTY, truecolor |
+| Linux SDL3 | `make sdl3` | `pkg-config sdl3` |
+| Linux fbdev | `make fbdev` | `/dev/fb0` |
+| Unix console | `make console` | TTY |
 | Windows GUI | `make win32` | MinGW |
-| Windows console | `make winconsole` | MinGW `-mconsole` |
+| Windows console | `make winconsole` | MinGW |
 | DOS | `make dos` | DJGPP on `PATH` |
-| WebAssembly | `make wasm` | `source ~/.local/opt/emsdk/emsdk_env.sh` |
+| WebAssembly | `make wasm` | emscripten (`~/.local/opt/emsdk`) |
 
-Core quality gate:
+Quality gate: `make ansi-check && make test && make smoke`
 
-```sh
-make ansi-check
-make test
-make smoke          # builds + --version across overlays
-```
-
-## Release bundle
+## Release
 
 ```sh
-make release          # categorized by-platform/ + flat/ + zip + SHA256SUMS
-make release-linux
-make release-windows
-make release-dos
-make release-extra    # wasm (+ sdl3 if available)
+make release              # everything this host can build
+make release-linux        # linux amd64 backends
+make release-cross-linux  # linux arm/i686/riscv64 + windows i686
+make release-bsd          # on FreeBSD / OpenBSD / NetBSD only
+make verify-release       # smoke-test dist-release/flat
 ```
+
+Output:
 
 ```text
 dist-release/
-  by-platform/…          # folders by OS / backend
-  flat/mote-linux-x11 …  # stable names for direct links
-  flat/mote-web.zip      # wasm bundle (html+js+wasm+data)
+  by-platform/<os>/<arch>/<backend>/mote[.upx]
+  flat/mote-<os>-<arch>-<backend>   # GitHub asset names
+  flat/mote-linux-console …         # legacy linux amd64 aliases
   mote-all-platforms.zip
   SHA256SUMS
 ```
 
-Live wasm demo for the download site: copy `overlay/wasm/build/*` into
-`mote-site/play/` (same four files the zip contains).
+Single port: `sh scripts/build-port.sh <os> <arch> <backend>`
 
-Screenshots (optional): `sh scripts/shots.sh` → writes into `mote-site/gallery/plat-*.png`.
+| OS | arch | backends in release |
+|----|------|---------------------|
+| linux | amd64 | console, x11, sdl2, wayland, fbdev |
+| linux | arm64, armhf, i686 | console, x11, sdl2 |
+| linux | riscv64 | console |
+| windows | amd64, i686 | gui, winconsole |
+| dos | i686 | dos |
+| web | — | wasm |
 
-Packed variants (`*.upx`) need the UPX binary. Makefiles use `UPX_BIN`
-(default `~/.local/opt/upx/upx`) and run it with `env -u UPX` so a stray
-`UPX=…` shell variable (UPX’s own options channel) cannot break packing.
+Cross on Debian: `gcc-aarch64-linux-gnu`, `gcc-arm-linux-gnueabihf`, `gcc-i686-linux-gnu`, `gcc-riscv64-linux-gnu`, `gcc-mingw-w64-i686`.
 
-Publish: `sh publish-github.sh` after `make release`
-(optional: `TAG=v2.0.0 sh publish-github.sh`; default tag is `v2.0.0`).
+Publish: `make release && sh publish-github.sh` (notes in `docs/releases/<tag>.md`).
+
+UPX: set `UPX_BIN` (default `~/.local/opt/upx/upx`).

@@ -12,6 +12,12 @@ dist-release/*
 *.swp
 *.swo
 .DS_Store
+__pycache__/
+*.pyc
+
+# scratch at repo root
+/out.c
+/sout.c
 
 # packed copies (optional UPX artifacts under build/)
 *.packed
@@ -19,5 +25,5 @@ dist-release/*
 
 # toolchain packages / local scratch
 *.deb
-shots/
 demo-media/
+shots/

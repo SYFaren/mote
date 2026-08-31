@@ -138,16 +138,14 @@ echo "  site URL: $SITE_URL"
 
 echo
 echo "=== 4/4  Release $TAG ==="
-NOTES_FILE="$MOTE_DIR/release-notes-${TAG}.md"
+NOTES_FILE="$MOTE_DIR/docs/releases/${TAG}.md"
 if [ -f "$NOTES_FILE" ]; then
   NOTES="$(cat "$NOTES_FILE")"
 else
   NOTES="$(cat <<EOF
 ## mote $TAG
 
-Prefer **\`mote-all-platforms.zip\`** — sorted by \`by-platform/<os>/<arch>/<backend>/\`.
-
-See \`docs/PLATFORMS.md\` for the full matrix. Site: https://syfaren.github.io/mote-site/
+See \`docs/BUILD.md\`. Download: \`mote-all-platforms.zip\` or assets under \`flat/\`.
 EOF
 )"
 fi

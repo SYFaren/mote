@@ -23,12 +23,8 @@ Shared squeeze flags: [`build.mk`](build.mk).
 
 ```text
 dist-release/
-  by-platform/
-    linux/{x11,wayland,sdl2,sdl3?,console,fbdev}/
-    windows/{gui,console}/
-    dos/
-    web/wasm/
-  flat/                     # stable GitHub asset names
-  mote-all-platforms.zip    # whole tree, categorized
+  by-platform/<os>/<arch>/<backend>/
+  flat/                     # GitHub asset names
+  mote-all-platforms.zip
   SHA256SUMS
 ```

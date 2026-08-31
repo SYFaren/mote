@@ -5,7 +5,7 @@ export PATH := $(HOME)/.local/opt/djgpp/bin:$(HOME)/.local/opt/emsdk/upstream/em
 .PHONY: all x11 win32 console winconsole dos sdl sdl3 wayland fbdev wasm \
 	test smoke clean pack \
 	dist release release-linux release-cross-linux release-bsd release-windows release-dos release-extra \
-	release-zip ansi-check list-targets
+	release-zip ansi-check verify-release
 
 all: x11
 
@@ -134,9 +134,6 @@ release-cross-linux:
 
 release-bsd:
 	@sh scripts/release-bsd.sh
-
-list-targets:
-	@sh scripts/list-targets.sh
 
 verify-release:
 	@sh scripts/verify-release.sh
