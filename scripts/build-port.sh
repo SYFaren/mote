@@ -71,7 +71,11 @@ case "$BACKEND" in
       esac
     fi
     "$MAKE" -C "$MK" clean 2>/dev/null || true
-    "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" all
+    STATIC=
+    if [ "$OS" = freebsd ] || [ "$OS" = openbsd ] || [ "$OS" = netbsd ]; then
+      [ "$BACKEND" = console ] && STATIC=MOTE_STATIC=1
+    fi
+    "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" $STATIC all
     if [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
       BDIR=build
     else

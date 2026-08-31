@@ -75,3 +75,9 @@ MOTE_LD_OPT = -Oz -flto -Wl,-dead_strip
 else
 MOTE_LD_OPT = -Oz -flto -Wl,--gc-sections -s
 endif
+
+ifeq ($(MOTE_STATIC),1)
+ifneq ($(MOTE_OS),macos)
+MOTE_LD_OPT += -static
+endif
+endif
