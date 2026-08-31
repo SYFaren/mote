@@ -22,11 +22,7 @@ jobs:
           sudo dpkg --add-architecture armhf
           sudo dpkg --add-architecture riscv64
           # Foreign arches (arm64/armhf/riscv64) live on ports.ubuntu.com, not security.ubuntu.com.
-          sudo sed -i -e '/^deb /s/^deb /deb [arch=amd64,i386] /' /etc/apt/sources.list
-          for f in /etc/apt/sources.list.d/*.list; do
-            [ -f "$f" ] || continue
-            sudo sed -i -e '/^deb /s/^deb /deb [arch=amd64,i386] /' "$f"
-          done
+          sudo sed -i -e '/^deb http/s/^deb /deb [arch=amd64,i386] /' /etc/apt/sources.list
           printf '%s\n' \
             'deb [arch=arm64,armhf,riscv64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse' \
             'deb [arch=arm64,armhf,riscv64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse' \
