@@ -1,5 +1,5 @@
 #!/bin/sh
-# Cross-build Linux (and Windows i686) release ports from a Linux host.
+# Cross-build Linux (glibc) and Windows i686 release ports from a Linux host.
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
@@ -20,8 +20,14 @@ build_if_cc() {
 
 echo "=== release-cross-linux ==="
 
-for arch in i686 arm64 armhf riscv64; do
-  build_if_cc linux "$arch" console
+for arch in i686 arm64 armhf; do
+  for backend in console x11 sdl; do
+    build_if_cc linux "$arch" "$backend"
+  done
+done
+
+for backend in console x11 sdl; do
+  build_if_cc linux riscv64 "$backend" || true
 done
 
 # Windows i686 (amd64 comes from release-windows)

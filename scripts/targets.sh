@@ -53,6 +53,38 @@ target_cross() {
   esac
 }
 
+# musl.cc cross prefix (see scripts/install-musl-cross.sh).
+target_musl_cross() {
+  arch="$1"
+  case "$arch" in
+    amd64)   printf '' ;;
+    arm64)   printf 'aarch64-linux-musl-' ;;
+    armhf)   printf 'armv7l-linux-musleabihf-' ;;
+    i686)    printf 'i686-linux-musl-' ;;
+    riscv64) printf 'riscv64-linux-musl-' ;;
+    *)
+      echo "error: unsupported musl arch $arch" >&2
+      return 1
+      ;;
+  esac
+}
+
+# Directory name under ~/.local/opt/musl-cross after install-musl-cross.sh.
+target_musl_cross_dir() {
+  arch="$1"
+  case "$arch" in
+    amd64)   printf '' ;;
+    arm64)   printf 'aarch64-linux-musl-cross' ;;
+    armhf)   printf 'armv7l-linux-musleabihf-cross' ;;
+    i686)    printf 'i686-linux-musl-cross' ;;
+    riscv64) printf 'riscv64-linux-musl-cross' ;;
+    *)
+      echo "error: unsupported musl arch $arch" >&2
+      return 1
+      ;;
+  esac
+}
+
 # pkg-config search path for Linux cross builds (multiarch dev packages).
 target_pkglibdir() {
   _arch="$1"

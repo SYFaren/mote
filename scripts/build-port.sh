@@ -13,7 +13,12 @@ ARCH="${2:?arch (amd64 i686 arm64 armhf riscv64)}"
 BACKEND="${3:?backend (console x11 sdl wayland fbdev gui winconsole dos wasm)}"
 
 DIST="$ROOT/dist-release"
-CAT="$DIST/by-platform/$OS/$ARCH"
+LIBC="${MOTE_LIBC:-glibc}"
+if [ "$LIBC" = musl ] && [ "$OS" = linux ]; then
+  CAT="$DIST/by-platform/$OS/${ARCH}-musl"
+else
+  CAT="$DIST/by-platform/$OS/$ARCH"
+fi
 FLAT="$DIST/flat"
 
 mkdir -p "$CAT" "$FLAT"
@@ -23,18 +28,44 @@ mkdir -p "$CAT" "$FLAT"
 # shellcheck source=ci-host.sh
 . "$ROOT/scripts/ci-host.sh"
 
-CROSS="$(target_cross "$OS" "$ARCH")" || exit 1
-CC="$(target_cc "$CROSS")"
+CROSS=""
+if [ "$LIBC" = musl ] && [ "$OS" = linux ]; then
+  case "$BACKEND" in
+    console|fbdev) ;;
+    *)
+      echo "musl: skip $BACKEND (static console/fbdev only)" >&2
+      exit 0
+      ;;
+  esac
+  CROSS="$(target_musl_cross "$ARCH")" || exit 1
+  if [ -z "$CROSS" ]; then
+    command -v musl-gcc >/dev/null 2>&1 || {
+      echo "error: musl-gcc not found (musl-tools)" >&2
+      exit 1
+    }
+    CC=musl-gcc
+  else
+    CC="$(target_cc "$CROSS")"
+    command -v "$CC" >/dev/null 2>&1 || {
+      echo "error: $CC not found (run install-musl-cross.sh $ARCH)" >&2
+      exit 1
+    }
+  fi
+else
+  CROSS="$(target_cross "$OS" "$ARCH")" || exit 1
+  CC="$(target_cc "$CROSS")"
+fi
 MAKE="$(target_make)"
 export CC
 export MAKE
-export PATH="${HOME}/.local/opt/djgpp/bin:${HOME}/.local/opt/emsdk/upstream/emscripten:${HOME}/.local/opt/emsdk:${PATH}"
+export MOTE_LIBC="$LIBC"
+export PATH="${HOME}/.local/opt/djgpp/bin:${HOME}/.local/opt/emsdk/upstream/emscripten:${HOME}/.local/opt/emsdk:${HOME}/.local/opt/musl-cross/aarch64-linux-musl-cross/bin:${HOME}/.local/opt/musl-cross/armv7l-linux-musleabihf-cross/bin:${HOME}/.local/opt/musl-cross/i686-linux-musl-cross/bin:${HOME}/.local/opt/musl-cross/riscv64-linux-musl-cross/bin:${PATH}"
 
 MOTE_OS="$OS"
 MOTE_ARCH="$ARCH"
 export MOTE_OS MOTE_ARCH
 
-if [ -n "$CROSS" ] && [ "$OS" = linux ]; then
+if [ -n "$CROSS" ] && [ "$OS" = linux ] && [ "$LIBC" != musl ]; then
   PKGDIR="$(target_pkglibdir "$ARCH")"
   if [ -n "$PKGDIR" ]; then
     export PKG_CONFIG_LIBDIR="$PKGDIR"
@@ -75,20 +106,31 @@ case "$BACKEND" in
     if [ "$OS" = freebsd ] || [ "$OS" = openbsd ] || [ "$OS" = netbsd ]; then
       [ "$BACKEND" = console ] && STATIC=MOTE_STATIC=1
     fi
-    "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" $STATIC all
-    if [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
+    "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" MOTE_LIBC="$LIBC" $STATIC all
+    if [ "$LIBC" = musl ]; then
+      BDIR="build-$OS-$ARCH-musl"
+    elif [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
       BDIR=build
     else
       BDIR="build-$OS-$ARCH"
     fi
     OUT="$MK/$BDIR/mote"
-    FLAT_NAME="mote-$OS-$ARCH-$BACKEND"
+    if [ "$LIBC" = musl ]; then
+      FLAT_NAME="mote-$OS-$ARCH-musl-$BACKEND"
+    else
+      FLAT_NAME="mote-$OS-$ARCH-$BACKEND"
+    fi
     CAT_NAME="$BACKEND"
     [ "$BACKEND" = sdl ] && CAT_NAME=sdl2
     mkdir -p "$CAT/$CAT_NAME"
     cp -f "$OUT" "$CAT/$CAT_NAME/mote"
     cp -f "$OUT" "$FLAT/$FLAT_NAME"
-    if [ "$OS" = linux ] && [ "$ARCH" = amd64 ] ]; then
+    if [ "$LIBC" = musl ] && [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
+      case "$BACKEND" in
+        console) cp -f "$OUT" "$FLAT/mote-linux-musl-console" ;;
+        fbdev) cp -f "$OUT" "$FLAT/mote-linux-musl-fbdev" ;;
+      esac
+    elif [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
       case "$BACKEND" in
         console) cp -f "$OUT" "$FLAT/mote-linux-console" ;;
         x11) cp -f "$OUT" "$FLAT/mote-linux-x11" ;;
@@ -99,12 +141,12 @@ case "$BACKEND" in
     fi
     UPX_BIN="${UPX_BIN:-$(command -v upx 2>/dev/null || echo "$HOME/.local/opt/upx/upx")}"
     export UPX_BIN
-    if "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" UPX_BIN="$UPX_BIN" pack 2>/dev/null; then
+    if "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" MOTE_LIBC="$LIBC" UPX_BIN="$UPX_BIN" pack 2>/dev/null; then
       cp -f "$MK/$BDIR/mote.packed" "$CAT/$CAT_NAME/mote.upx" 2>/dev/null && \
       cp -f "$MK/$BDIR/mote.packed" "$FLAT/$FLAT_NAME.upx" 2>/dev/null && \
       echo "upx: $FLAT/$FLAT_NAME.upx"
     fi
-    printf '%s\n' "$OS $ARCH · $CAT_NAME" > "$CAT/$CAT_NAME/README.txt"
+    printf '%s\n' "$OS $ARCH ${LIBC} · $CAT_NAME" > "$CAT/$CAT_NAME/README.txt"
     echo "ok: $FLAT/$FLAT_NAME"
     ;;
   gui)

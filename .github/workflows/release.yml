@@ -17,16 +17,23 @@ jobs:
       - uses: actions/checkout@v4
       - name: Dependencies
         run: |
+          sudo dpkg --add-architecture arm64
+          sudo dpkg --add-architecture armhf
+          sudo dpkg --add-architecture i386
+          sudo dpkg --add-architecture riscv64
           sudo apt-get update
-          sudo apt-get install -y build-essential libx11-dev libsdl2-dev \
+          sudo apt-get install -y build-essential musl-tools musl-dev libx11-dev libsdl2-dev \
             libwayland-dev wayland-protocols libxkbcommon-dev \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf gcc-i686-linux-gnu \
             gcc-riscv64-linux-gnu gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
-            qemu-user-static zip pkg-config upx-ucl
-      - name: Build Linux + Windows + cross
+            libx11-dev:arm64 libx11-dev:armhf libx11-dev:i386 libx11-dev:riscv64 \
+            libsdl2-dev:arm64 libsdl2-dev:armhf libsdl2-dev:i386 libsdl2-dev:riscv64 \
+            qemu-user-static zip pkg-config upx-ucl curl
+      - name: Build Linux + Windows + cross + musl
         run: |
           make release-linux release-windows
           make release-cross-linux || true
+          make release-musl-linux || true
           make release-dos || true
           make release-extra || true
       - name: Upload
