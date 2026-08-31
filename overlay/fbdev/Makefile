@@ -11,7 +11,7 @@ OV = ../soft/main.c fbdev.c ../posix/os.c ../soft/soft.c
 SRC = $(CORE) $(OV)
 
 INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat -I../soft
-CFLAGS = -std=c99 -Wall -Wextra -D_GNU_SOURCE $(INCLUDES) $(MOTE_OPT) $(MOTE_INC)
+CFLAGS = -std=c99 -Wall -Wextra -D_GNU_SOURCE $(INCLUDES) $(MOTE_OPT)
 LDFLAGS = $(MOTE_LD_OPT)
 
 .PHONY: all clean run pack

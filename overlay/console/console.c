@@ -12,7 +12,14 @@
 #include <unistd.h>
 
 #ifdef __linux__
+#if defined(__MUSL__)
+/* musl-gcc lacks glibc's linux/*.h layout; ioctl numbers are stable. */
+#define KDGKBMODE 0x4B44
+#define KDSKBMODE 0x4B45
+#define K_UNICODE 0x03
+#else
 #include <linux/kd.h>
+#endif
 #endif
 
 typedef struct {
