@@ -25,12 +25,14 @@ esac
 
 echo "=== release-bsd: $OS $ARCH ==="
 
+console_ok=0
 for backend in console x11 sdl; do
   if sh "$ROOT/scripts/build-port.sh" "$OS" "$ARCH" "$backend"; then
-    :
+    [ "$backend" = console ] && console_ok=1
   else
     echo "(skip $backend on $OS)"
   fi
 done
 
+[ "$console_ok" -eq 1 ] || exit 1
 echo "=== release-bsd done ==="

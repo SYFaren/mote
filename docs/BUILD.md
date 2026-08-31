@@ -24,6 +24,7 @@ make release              # everything this host can build
 make release-linux        # linux amd64 backends
 make release-cross-linux  # linux arm/i686/riscv64 + windows i686
 make release-bsd          # on FreeBSD / OpenBSD / NetBSD only
+make release-macos        # on macOS only
 make verify-release       # smoke-test dist-release/flat
 ```
 
@@ -45,9 +46,14 @@ Single port: `sh scripts/build-port.sh <os> <arch> <backend>`
 | linux | amd64 | console, x11, sdl2, wayland, fbdev |
 | linux | arm64, armhf, i686 | console, x11, sdl2 |
 | linux | riscv64 | console |
+| macos | amd64, arm64 | console, sdl2 |
+| freebsd | amd64, arm64 | console, x11, sdl2 |
+| openbsd | amd64 | console, x11, sdl2 |
 | windows | amd64, i686 | gui, winconsole |
 | dos | i686 | dos |
 | web | — | wasm |
+
+GitHub Actions (`.github/workflows/release.yml`): Linux + cross on `ubuntu-latest`, macOS on `macos-14`, FreeBSD/OpenBSD via `vmactions/*-vm`, merged into one zip on tag push.
 
 Cross on Debian: `gcc-aarch64-linux-gnu`, `gcc-arm-linux-gnueabihf`, `gcc-i686-linux-gnu`, `gcc-riscv64-linux-gnu`, `gcc-mingw-w64-i686`.
 

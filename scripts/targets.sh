@@ -12,6 +12,14 @@ target_cross() {
     linux-riscv64) printf 'riscv64-linux-gnu-' ;;
     windows-amd64) printf 'x86_64-w64-mingw32-' ;;
     windows-i686)  printf 'i686-w64-mingw32-' ;;
+    macos-amd64|macos-arm64)
+      if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+        printf ''
+      else
+        echo "error: macos builds require a Darwin host" >&2
+        return 1
+      fi
+      ;;
     freebsd-amd64|openbsd-amd64|netbsd-amd64)
       if [ "$(uname -s 2>/dev/null)" = "FreeBSD" ] || \
          [ "$(uname -s 2>/dev/null)" = "OpenBSD" ] || \

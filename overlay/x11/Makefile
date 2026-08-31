@@ -11,8 +11,13 @@ OV = main.c x11.c ../posix/os.c
 SRC = $(CORE) $(OV)
 
 INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat
-CFLAGS = -std=c99 -Wall -Wextra $(INCLUDES) $(MOTE_POSIX) $(MOTE_OPT) -fno-plt
-LDFLAGS = -lX11 $(MOTE_LD_OPT) -fno-plt
+X11_CFLAGS := $(shell pkg-config --cflags x11 2>/dev/null)
+X11_LIBS := $(shell pkg-config --libs x11 2>/dev/null)
+ifeq ($(X11_LIBS),)
+  X11_LIBS = -lX11
+endif
+CFLAGS = -std=c99 -Wall -Wextra $(INCLUDES) $(MOTE_POSIX) $(MOTE_OPT) $(MOTE_PLT) $(X11_CFLAGS)
+LDFLAGS = $(X11_LIBS) $(MOTE_LD_OPT) $(MOTE_PLT)
 
 .PHONY: all clean run test pack
 

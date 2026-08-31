@@ -11,8 +11,8 @@ OV = main.c console.c ../posix/os.c
 SRC = $(CORE) $(OV)
 
 INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat
-CFLAGS = -std=c99 -Wall -Wextra $(INCLUDES) $(MOTE_POSIX) $(MOTE_OPT) -fno-plt
-LDFLAGS = $(MOTE_LD_OPT) -fno-plt
+CFLAGS = -std=c99 -Wall -Wextra $(INCLUDES) $(MOTE_POSIX) $(MOTE_OPT) $(MOTE_PLT)
+LDFLAGS = $(MOTE_LD_OPT) $(MOTE_PLT)
 
 .PHONY: all clean run pack
 

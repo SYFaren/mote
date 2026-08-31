@@ -8,7 +8,7 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
-OS="${1:?os (linux freebsd openbsd netbsd windows dos)}"
+OS="${1:?os (linux macos freebsd openbsd netbsd windows dos)}"
 ARCH="${2:?arch (amd64 i686 arm64 armhf riscv64)}"
 BACKEND="${3:?backend (console x11 sdl wayland fbdev gui winconsole dos wasm)}"
 
@@ -20,10 +20,14 @@ mkdir -p "$CAT" "$FLAT"
 
 # shellcheck source=targets.sh
 . "$ROOT/scripts/targets.sh"
+# shellcheck source=ci-host.sh
+. "$ROOT/scripts/ci-host.sh"
 
 CROSS="$(target_cross "$OS" "$ARCH")" || exit 1
-CC="${CROSS}gcc"
+CC="$(target_cc "$CROSS")"
+MAKE="$(target_make)"
 export CC
+export MAKE
 export PATH="${HOME}/.local/opt/djgpp/bin:${HOME}/.local/opt/emsdk/upstream/emscripten:${HOME}/.local/opt/emsdk:${PATH}"
 
 MOTE_OS="$OS"
@@ -44,6 +48,12 @@ case "$BACKEND" in
     [ -d "$MK" ] || { echo "no overlay: $BACKEND" >&2; exit 1; }
     case "$OS" in
       linux) ;;
+      macos)
+        case "$BACKEND" in
+          console|sdl) ;;
+          *) echo "$BACKEND not supported on macos (CI: console + sdl only)" >&2; exit 1 ;;
+        esac
+        ;;
       freebsd|openbsd|netbsd)
         case "$BACKEND" in
           console|x11|sdl) ;;
@@ -60,8 +70,8 @@ case "$BACKEND" in
           ;;
       esac
     fi
-    make -C "$MK" clean 2>/dev/null || true
-    make -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" all
+    "$MAKE" -C "$MK" clean 2>/dev/null || true
+    "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" all
     if [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
       BDIR=build
     else
@@ -83,7 +93,7 @@ case "$BACKEND" in
         fbdev) cp -f "$OUT" "$FLAT/mote-linux-fbdev" ;;
       esac
     fi
-    make -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" pack 2>/dev/null && \
+    "$MAKE" -C "$MK" CC="$CC" MOTE_OS="$MOTE_OS" MOTE_ARCH="$MOTE_ARCH" pack 2>/dev/null && \
       cp -f "$MK/$BDIR/mote.packed" "$CAT/$CAT_NAME/mote.upx" 2>/dev/null && \
       cp -f "$MK/$BDIR/mote.packed" "$FLAT/$FLAT_NAME.upx" 2>/dev/null || true
     printf '%s\n' "$OS $ARCH · $CAT_NAME" > "$CAT/$CAT_NAME/README.txt"
@@ -92,13 +102,13 @@ case "$BACKEND" in
   gui)
     [ "$OS" = windows ] || { echo "gui is windows-only" >&2; exit 1; }
     WINCC="${CROSS}gcc"
-    make -C "$ROOT/overlay/win32" clean 2>/dev/null || true
-    make -C "$ROOT/overlay/win32" WINCC="$WINCC" all
+    "$MAKE" -C "$ROOT/overlay/win32" clean 2>/dev/null || true
+    "$MAKE" -C "$ROOT/overlay/win32" WINCC="$WINCC" all
     mkdir -p "$CAT/gui"
     cp -f "$ROOT/overlay/win32/build/mote.exe" "$CAT/gui/mote.exe"
     cp -f "$ROOT/overlay/win32/build/mote.exe" "$FLAT/mote-$OS-$ARCH-gui.exe"
     [ "$ARCH" = amd64 ] && cp -f "$ROOT/overlay/win32/build/mote.exe" "$FLAT/mote-windows-gui.exe"
-    make -C "$ROOT/overlay/win32" pack 2>/dev/null && \
+    "$MAKE" -C "$ROOT/overlay/win32" pack 2>/dev/null && \
       cp -f "$ROOT/overlay/win32/build/mote.packed.exe" "$CAT/gui/mote.upx.exe" 2>/dev/null && \
       cp -f "$ROOT/overlay/win32/build/mote.packed.exe" "$FLAT/mote-$OS-$ARCH-gui.upx.exe" 2>/dev/null || true
     printf '%s\n' "$OS $ARCH · GDI GUI" > "$CAT/gui/README.txt"
@@ -107,8 +117,8 @@ case "$BACKEND" in
   winconsole)
     [ "$OS" = windows ] || { echo "winconsole is windows-only" >&2; exit 1; }
     WINCC="${CROSS}gcc"
-    make -C "$ROOT/overlay/winconsole" clean 2>/dev/null || true
-    make -C "$ROOT/overlay/winconsole" WINCC="$WINCC" all
+    "$MAKE" -C "$ROOT/overlay/winconsole" clean 2>/dev/null || true
+    "$MAKE" -C "$ROOT/overlay/winconsole" WINCC="$WINCC" all
     mkdir -p "$CAT/console"
     cp -f "$ROOT/overlay/winconsole/build/mote.exe" "$CAT/console/mote.exe"
     cp -f "$ROOT/overlay/winconsole/build/mote.exe" "$FLAT/mote-$OS-$ARCH-console.exe"
@@ -118,8 +128,8 @@ case "$BACKEND" in
     ;;
   dos)
     [ "$OS" = dos ] && [ "$ARCH" = i686 ] || { echo "dos is i686 only" >&2; exit 1; }
-    make -C "$ROOT/overlay/dos" clean 2>/dev/null || true
-    make -C "$ROOT/overlay/dos" all
+    "$MAKE" -C "$ROOT/overlay/dos" clean 2>/dev/null || true
+    "$MAKE" -C "$ROOT/overlay/dos" all
     mkdir -p "$CAT"
     cp -f "$ROOT/overlay/dos/build/mote.exe" "$CAT/mote.exe"
     cp -f "$ROOT/overlay/dos/build/mote.exe" "$FLAT/mote-dos.exe"

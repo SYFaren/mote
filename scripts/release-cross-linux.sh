@@ -21,9 +21,7 @@ build_if_cc() {
 echo "=== release-cross-linux ==="
 
 for arch in i686 arm64 armhf riscv64; do
-  for backend in console x11 sdl; do
-    build_if_cc linux "$arch" "$backend" || true
-  done
+  build_if_cc linux "$arch" console
 done
 
 # Windows i686 (amd64 comes from release-windows)

@@ -9,8 +9,10 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  linux:
     runs-on: ubuntu-latest
+    env:
+      UPX_BIN: /usr/bin/upx
     steps:
       - uses: actions/checkout@v4
       - name: Dependencies
@@ -18,17 +20,110 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libx11-dev libsdl2-dev \
             libwayland-dev wayland-protocols libxkbcommon-dev \
-            mingw-w64 upx-ucl zip
-      - name: Build release assets
-        run: make release-linux release-windows release-zip
-        env:
-          # wasm optional on CI (no emsdk by default)
-          PATH: ${{ env.PATH }}
-      - name: Checksums
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf gcc-i686-linux-gnu \
+            gcc-riscv64-linux-gnu gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
+            qemu-user-static zip pkg-config upx-ucl
+      - name: Build Linux + Windows + cross
         run: |
-          test -f dist-release/SHA256SUMS || (cd dist-release/flat && sha256sum * > ../SHA256SUMS)
-          find dist-release -type f | sort
-      - name: Upload artifact
+          make release-linux release-windows
+          make release-cross-linux || true
+          make release-dos || true
+          make release-extra || true
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux
+          path: dist-release/
+          if-no-files-found: warn
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: brew install sdl2 pkg-config
+      - name: Build macOS
+        run: sh scripts/release-macos.sh
+      - name: Smoke
+        run: |
+          arch=$(uname -m | sed 's/x86_64/amd64/;s/arm64/arm64/')
+          dist-release/flat/mote-macos-${arch}-console --version
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: dist-release/
+
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build on FreeBSD 14.2
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '14.2'
+          usesh: true
+          prepare: |
+            pkg install -y gmake zip pkgconf libX11 sdl2
+          run: |
+            gmake --version
+            sh scripts/release-bsd.sh
+            dist-release/flat/mote-freebsd-amd64-console --version
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-freebsd
+          path: dist-release/
+          if-no-files-found: warn
+
+  openbsd:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build on OpenBSD 7.7
+        uses: vmactions/openbsd-vm@v1
+        with:
+          release: '7.7'
+          usesh: true
+          prepare: |
+            export PKG_PATH=https://cdn.openbsd.org/pub/OpenBSD/7.7/packages/amd64/
+            pkg_add -U gmake zip libx11 sdl2
+          run: |
+            gmake --version
+            sh scripts/release-bsd.sh
+            dist-release/flat/mote-openbsd-amd64-console --version
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-openbsd
+          path: dist-release/
+          if-no-files-found: warn
+
+  merge:
+    needs: [linux, macos, freebsd, openbsd]
+    if: always() && !cancelled() && (needs.linux.result != 'cancelled')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+      - name: Merge release tree
+        run: |
+          set -eu
+          merge_one() {
+            [ -d "$1" ] || return 0
+            echo "merge: $1"
+            sh scripts/ci-merge-release.sh "$1"
+          }
+          merge_one artifacts/dist-linux
+          merge_one artifacts/dist-macos
+          merge_one artifacts/dist-freebsd
+          merge_one artifacts/dist-openbsd
+      - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:
           name: mote-dist
@@ -37,6 +132,13 @@ jobs:
             dist-release/flat/**
             dist-release/mote-all-platforms.zip
             dist-release/SHA256SUMS
+          if-no-files-found: warn
+      - name: Prepare release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          n="docs/releases/${GITHUB_REF_NAME}.md"
+          [ -f "$n" ] || n="docs/releases/v2.0.0.md"
+          cp "$n" /tmp/release-notes.md
       - name: GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -45,4 +147,5 @@ jobs:
             dist-release/mote-all-platforms.zip
             dist-release/SHA256SUMS
             dist-release/flat/*
-          generate_release_notes: true
+          body_path: /tmp/release-notes.md
+          fail_on_unmatched_files: false
