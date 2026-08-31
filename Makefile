@@ -4,7 +4,7 @@ export PATH := $(HOME)/.local/opt/djgpp/bin:$(HOME)/.local/opt/emsdk/upstream/em
 
 .PHONY: all x11 win32 console winconsole dos sdl sdl3 wayland fbdev wasm \
 	test smoke clean pack \
-	dist release release-linux release-cross-linux release-bsd release-macos release-windows release-dos release-extra \
+	dist release release-linux release-cross-linux release-musl-linux release-bsd release-macos release-windows release-dos release-extra \
 	release-zip ansi-check verify-release
 
 all: x11
@@ -132,6 +132,9 @@ release-linux: console x11 sdl wayland fbdev
 release-cross-linux:
 	@sh scripts/release-cross-linux.sh
 
+release-musl-linux:
+	@sh scripts/release-musl-linux.sh
+
 release-bsd:
 	@sh scripts/release-bsd.sh
 
@@ -232,6 +235,7 @@ release:
 	@mkdir -p $(DIST)
 	@$(MAKE) release-linux release-windows
 	@$(MAKE) release-cross-linux || true
+	@$(MAKE) release-musl-linux || true
 	@case "$$(uname -s 2>/dev/null)" in FreeBSD|OpenBSD|NetBSD) $(MAKE) release-bsd ;; esac
 	@if command -v i586-pc-msdosdjgpp-gcc >/dev/null 2>&1; then \
 	  $(MAKE) release-dos; \
