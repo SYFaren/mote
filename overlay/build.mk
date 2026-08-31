@@ -73,6 +73,11 @@ MOTE_POSIX = -D_BSD_SOURCE
 MOTE_PLT =
 endif
 
+# Native musl-gcc on amd64 does not search /usr/include/linux (console kd.h).
+ifdef MOTE_KERNINC
+MOTE_INC += -idirafter /usr/include
+endif
+
 ifeq ($(MOTE_LIBC),musl)
 MOTE_LD_OPT = -Oz -flto -static -Wl,--gc-sections -s
 else ifeq ($(MOTE_OS),linux)

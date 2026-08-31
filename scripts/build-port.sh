@@ -44,6 +44,7 @@ if [ "$LIBC" = musl ] && [ "$OS" = linux ]; then
       exit 1
     }
     CC=musl-gcc
+    export MOTE_KERNINC=1
   else
     CC="$(target_cc "$CROSS")"
     command -v "$CC" >/dev/null 2>&1 || {
