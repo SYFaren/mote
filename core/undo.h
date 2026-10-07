@@ -1,4 +1,3 @@
-/* mote core — undo.h */
 #ifndef MOTE_UNDO_H
 #define MOTE_UNDO_H
 
@@ -23,7 +22,7 @@ typedef struct {
 
 void undo_init(UndoStack *u);
 void undo_free(UndoStack *u);
-/* Push; coalesces adjacent single-rune inserts when coalesce!=0. */
+/* With coalesce set, typing right after the last insert extends it. */
 mote_bool undo_push(UndoStack *u, UndoKind kind, size_t pos, const char *text,
                     size_t len, mote_bool coalesce);
 UndoAct *undo_pop_undo(UndoStack *u);

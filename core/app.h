@@ -1,11 +1,10 @@
-/* mote core — app.h: program entry shared by every overlay */
 #ifndef MOTE_APP_H
 #define MOTE_APP_H
 
 #include "editor.h"
 
 typedef struct {
-  const char *tag;       /* --version suffix, e.g. " (console)" */
+  const char *tag;       /* --version suffix like " (console)" */
   const char *geom_help; /* -g line in --help */
   const char *notes;     /* last --help lines: config path, env vars */
   const char *no_plat;   /* error when plat_create fails */
@@ -14,7 +13,7 @@ typedef struct {
   /* -g is in text cells: the config's win_w/win_h are GUI window pixels,
      so they are neither passed to plat_create nor overwritten on exit. */
   mote_bool cell_geom;
-  void (*after_first_draw)(Editor *e); /* optional */
+  void (*after_first_draw)(Editor *e); /* may be NULL */
 } MoteApp;
 
 /* Parse args, load config, open files, run the event loop, save config. */

@@ -1,5 +1,4 @@
 #!/bin/sh
-# Smoke-test dist-release/flat binaries (native, qemu-user, wine).
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"

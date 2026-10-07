@@ -1,4 +1,3 @@
-# mote — Linux framebuffer (/dev/fb0)
 CC ?= gcc
 UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..

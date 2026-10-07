@@ -1,4 +1,3 @@
-/* mote core — directory listing (POSIX / DJGPP / Win32) */
 #include "dirlist.h"
 #include "mote_snprintf.h"
 #include <string.h>

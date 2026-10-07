@@ -1,10 +1,4 @@
 #!/bin/sh
-# Build one mote port:  build-port.sh <os> <arch> <backend>
-# Examples:
-#   build-port.sh linux amd64 console
-#   build-port.sh linux arm64 x11
-#   build-port.sh freebsd amd64 console
-#   build-port.sh windows amd64 gui
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"

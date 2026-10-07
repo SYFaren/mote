@@ -1,4 +1,3 @@
-/* mote overlay/dos — VGA text mode (DJGPP / FreeDOS) */
 #include "platform.h"
 #include "common.h"
 #include "keymap.h"
@@ -24,24 +23,24 @@
 #define VGA_ROWS 25
 #define VGA_TEXT 0xB8000UL
 
-/* VGA text cell: char + attribute */
+/* one character and its color attribute */
 typedef struct {
   unsigned char ch;
   unsigned char attr;
-  mote_u32 fg, bg; /* last RGB asked (for attr remap) */
+  mote_u32 fg, bg; /* colors last asked for */
 } Cell;
 
 struct Plat {
   int cols, rows, font_px, caret_x, caret_y;
   mote_bool caret_on;
   Cell *cells;
-  Cell *prev; /* for dirty redraw */
+  Cell *prev; /* what is on screen now */
   char *clip;
   size_t clip_n;
   EvQueue q;
 };
 
-/* Curated 16-color palette tuned for mote themes (programmed into VGA DAC). */
+/* 16 colors picked for the mote themes, loaded into the VGA DAC. */
 static const mote_u32 VGA16[16] = {
     0x0F1419ul, /* 0  bg dark */
     0x007ACCul, /* 1  status blue */
@@ -70,21 +69,21 @@ static void vga_set_dac(unsigned idx, mote_u32 rgb) {
 
 static void vga_load_palette(void) {
   unsigned i;
-  /* Mode 03h Attribute Controller maps attr N → random DAC slots in the
-   * first 64 (e.g. bright green attr 10 → DAC 0x12). Force identity so
-   * attr N uses DAC N, then program DAC 0..15 to our theme colors. */
+  /* In mode 03h the attribute controller sends color N to scattered DAC
+   * slots (bright green 10 goes to 0x12). Map N to N first, then load our
+   * colors into DAC 0 to 15. */
   (void)inportb(0x3DA); /* reset AC address flip-flop */
   for (i = 0; i < 16; i++) {
     outportb(0x3C0, (unsigned char)i);
     outportb(0x3C0, (unsigned char)i);
   }
   (void)inportb(0x3DA);
-  outportb(0x3C0, 0x20); /* PAS: enable display */
+  outportb(0x3C0, 0x20); /* turn the display back on */
   for (i = 0; i < 16; i++) vga_set_dac(i, VGA16[i]);
 }
 
 static unsigned char cp_to_dos(mote_u32 cp) {
-  /* CP866 (OEM Russian) — FreeDOS / DOSBox often use this for Cyrillic. */
+  /* Code page 866, the usual Cyrillic code page in DOS. */
   if (cp < 128) return (unsigned char)cp;
   if (cp >= 0x0410 && cp <= 0x042F) /* А-Я */
     return (unsigned char)(0x80 + (cp - 0x0410));
@@ -111,7 +110,8 @@ static unsigned char cp_to_dos(mote_u32 cp) {
   return '?';
 }
 
-/* Snap theme HL RGBs onto curated VGA indices so keywords don't collapse. */
+/* Palette slot for a theme color. The fixed rules keep different syntax
+   colors from landing on the same slot. */
 static unsigned char nearest_vga(mote_u32 rgb) {
   int i, best = 0;
   long best_d = 0x7fffffffL;
@@ -119,13 +119,13 @@ static unsigned char nearest_vga(mote_u32 rgb) {
   int g = (int)((rgb >> 8) & 255);
   int b = (int)(rgb & 255);
   int bri = r + g + b;
-  /* Exact / near-exact theme anchors → fixed slots (see VGA16). */
+  /* known theme colors go to fixed slots */
   if (r < 40 && g < 40 && b < 45) return 0;           /* editor / slate bg */
   if (bri > 40 && bri < 140 && r < 55 && g < 60 && b < 70 && !(r < 40 && g < 40))
-    return 8; /* gutter / panel — only when not pure bg */
+    return 8; /* gutter, but not the plain background */
   if (r > 200 && g > 200 && b > 200) return 15;       /* white */
   if (r > 180 && g > 180 && b > 180) return 7;        /* fg */
-  /* Teal/cyan before olive — type 4EC9B0 used to collapse into comment. */
+  /* cyan before green, or types (4EC9B0) turn comment green */
   if (g > 140 && b > 140 && r < 130 && b + 40 >= g) return 3; /* type cyan */
   if (b > 170 && r < 130 && g > 100 && g < 210) return 9;     /* keyword blue */
   if (b > r + 30 && b > g && r < 120) return 1;               /* status blue */
@@ -157,8 +157,8 @@ static unsigned char nearest_vga(mote_u32 rgb) {
 
 static unsigned char make_attr(mote_u32 fg, mote_u32 bg) {
   unsigned char f = nearest_vga(fg) & 0x0f;
-  /* VGA attribute bit7 is BLINK unless bright-bg mode sticks. Never put
-   * indices 8..15 in the background nibble — that was the dark-theme flash. */
+  /* Bit 7 blinks if bright backgrounds get switched off again, so the
+   * background stays within colors 0 to 7. */
   unsigned char b = nearest_vga(bg) & 0x07;
   return (unsigned char)((b << 4) | f);
 }
@@ -190,7 +190,7 @@ static mote_bool resize(Plat *p, int cols, int rows) {
   return MOTE_TRUE;
 }
 
-/* MOTE_KEYTRACE=1: log raw getkey() codes and the keys they became. */
+/* With MOTE_KEYTRACE=1, logs each getkey() code and the key it became. */
 static void key_trace(int raw, const PlatEvent *e) {
   FILE *f;
   if (!getenv("MOTE_KEYTRACE") || !(f = fopen("KEYTRACE.LOG", "a"))) return;
@@ -215,14 +215,14 @@ static void emit(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
   if (k != PK_NONE) key_flush(p, k, ctrl, shift);
 }
 
-/* Alt+letter arrives as 0x100 + keyboard scancode (row order, not ABC). */
+/* Alt+letter arrives as 0x100 + scancode, in keyboard row order. */
 static int alt_letter(int k) {
   static const char rows[] = "qwertyuiop" "\0\0\0\0" "asdfghjkl" "\0\0\0\0\0" "zxcvbnm";
   int sc = k - K_Alt_Q;
   return sc >= 0 && sc < (int)sizeof rows - 1 ? rows[sc] : 0;
 }
 
-/* F1-F10 plain / Shift / Ctrl / Alt, each a run of ten codes; 0 if not one. */
+/* F1 to F10 plain, with Shift, Ctrl or Alt, ten codes each; 0 if none. */
 static int fn_number(int k, mote_bool *ctrl, mote_bool *shift) {
   *ctrl = *shift = MOTE_FALSE;
   if (k >= K_F1 && k < K_F1 + 10) return k - K_F1 + 1;
@@ -301,7 +301,7 @@ static void hide_hw_cursor(void) {
   __dpmi_regs r;
   memset(&r, 0, sizeof r);
   r.x.ax = 0x0100;
-  r.x.cx = 0x2000; /* disable */
+  r.x.cx = 0x2000; /* cursor off */
   __dpmi_int(0x10, &r);
 }
 
@@ -310,8 +310,7 @@ static void set_text_mode(void) {
   memset(&r, 0, sizeof r);
   r.x.ax = 0x0003; /* 80x25 color text */
   __dpmi_int(0x10, &r);
-  /* Attribute bit7 = bright background (not blink). Without this, any
-   * bg index >= 8 makes the whole cell flash — dark theme hit this. */
+  /* Make bit 7 mean bright background instead of blink. */
   memset(&r, 0, sizeof r);
   r.x.ax = 0x1003;
   r.x.bx = 0; /* BH=0 BL=0: bright background, disable blink */
@@ -319,7 +318,7 @@ static void set_text_mode(void) {
   hide_hw_cursor();
 }
 
-/* Upload CP866+ASCII Terminus glyphs so Cyrillic text is readable. */
+/* Load our own font (ASCII and code page 866) so Cyrillic shows up. */
 static void vga_load_cp866_font(void) {
   int sel = 0;
   int seg;

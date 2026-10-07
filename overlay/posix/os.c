@@ -1,4 +1,3 @@
-/* mote overlay/posix — OS file + config path (all POSIX overlays) */
 #define _POSIX_C_SOURCE 200809L
 #include "platform.h"
 #include "common.h"

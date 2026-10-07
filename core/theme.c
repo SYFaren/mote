@@ -1,4 +1,3 @@
-/* mote core — theme.c */
 #include "theme.h"
 
 static const Theme themes[] = {

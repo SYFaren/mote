@@ -1,4 +1,3 @@
-/* Console CSI → PlatKey (needs real TTY for plat_create). */
 #include "platform.h"
 #include "utf8.h"
 

@@ -1,5 +1,4 @@
 #!/bin/sh
-# Static musl Linux ports (console + fbdev). GUI needs musl-linked X11/SDL — not here yet.
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"

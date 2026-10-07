@@ -1,5 +1,4 @@
 #!/bin/sh
-# Native macOS release (console + SDL2).
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"

@@ -1,4 +1,3 @@
-/* mote overlay/win32 — winutil.c */
 #include "winutil.h"
 #include "keymap.h"
 

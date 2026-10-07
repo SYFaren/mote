@@ -1,5 +1,4 @@
 #!/bin/sh
-# Native BSD release — run on FreeBSD, OpenBSD, or NetBSD.
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"

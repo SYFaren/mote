@@ -1,4 +1,3 @@
-/* Headless editor functional test: PlatKeys + save roundtrip. */
 #include "editor.h"
 #include "buffer.h"
 #include "common.h"
@@ -212,7 +211,7 @@ int main(void) {
   push_key(p, PK_UNDO, MOTE_TRUE, MOTE_FALSE);
   drain(&ed, p);
 
-  /* seed clipboard directly then paste — also test cut via explicit set */
+  /* put text on the clipboard directly, then paste it */
   expect(plat_clipboard_set(p, "int x = 42;\n", 12), "clip set");
   push_key(p, PK_SELALL, MOTE_TRUE, MOTE_FALSE);
   drain(&ed, p);
@@ -297,7 +296,6 @@ int main(void) {
   drain(&ed, p);
   expect(access(path2, R_OK) == 0, "second save path written");
 
-  /* --- new feature tests --- */
   {
     const char *qf_other = "/tmp/mote-qf-jk-other.txt";
     FILE *tf = fopen(qf_other, "w");

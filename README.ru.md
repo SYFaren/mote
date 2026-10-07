@@ -20,6 +20,7 @@
 make                 # Linux X11
 make console         # терминал Unix
 make test && make smoke
+sh scripts/install-local.sh   # поставить терминальную версию в ~/.local/bin/mote
 ```
 
 Другие порты: `make wayland`, `make sdl`, `make sdl3`, `make fbdev`,
@@ -247,7 +248,7 @@ core/       buffer, editor, keymap, utf8, undo, hl, regex, theme, config
 plat/       platform.h
 overlay/    x11 · wayland · sdl · fbdev · console · win32 · winconsole · dos · wasm
 docs/       BUILD.md
-scripts/    smoke, release helpers, install-local
+scripts/    smoke, release, publish and install helpers
 ```
 
 `core/` обязан оставаться на C89 (`make ansi-check`); каждый оверлей добавляет
@@ -255,5 +256,5 @@ scripts/    smoke, release helpers, install-local
 
 ```sh
 make release
-sh publish-github.sh
+sh scripts/publish-github.sh
 ```

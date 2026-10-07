@@ -1,9 +1,3 @@
-# mote — DOS overlay (DJGPP → FreeDOS / DOSBox)
-#
-# Toolchain: https://github.com/andrewwutw/build-djgpp/releases
-#   export PATH="$HOME/.local/opt/djgpp/bin:$PATH"
-# Then: make -C overlay/dos
-#
 DOSCC ?= i586-pc-msdosdjgpp-gcc
 UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..

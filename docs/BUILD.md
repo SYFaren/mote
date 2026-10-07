@@ -12,8 +12,8 @@
 | Unix console | `make console` | TTY |
 | Windows GUI | `make win32` | MinGW |
 | Windows console | `make winconsole` | MinGW |
-| DOS | `make dos` | DJGPP on `PATH` |
-| WebAssembly | `make wasm` | emscripten (`~/.local/opt/emsdk`) |
+| DOS | `make dos` | DJGPP ([build-djgpp](https://github.com/andrewwutw/build-djgpp/releases)) on `PATH` |
+| WebAssembly | `make wasm` | emscripten (`source ~/.local/opt/emsdk/emsdk_env.sh`) |
 
 Quality gate: `make ansi-check && make test && make smoke`
 
@@ -60,6 +60,6 @@ GitHub Actions (`.github/workflows/release.yml`): Linux + cross on `ubuntu-lates
 
 Cross on Debian: `gcc-aarch64-linux-gnu`, `gcc-arm-linux-gnueabihf`, `gcc-i686-linux-gnu`, `gcc-riscv64-linux-gnu`, `gcc-mingw-w64-i686`.
 
-Publish: `make release && sh publish-github.sh` (notes in `docs/releases/<tag>.md`).
+Publish: `make release && sh scripts/publish-github.sh` (notes in `docs/releases/<tag>.md`).
 
 UPX: set `UPX_BIN` (default `~/.local/opt/upx/upx`).

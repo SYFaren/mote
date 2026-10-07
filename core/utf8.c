@@ -1,4 +1,3 @@
-/* mote core — utf8.c */
 #include "utf8.h"
 
 static int utf8_cont(unsigned char c) { return (c & 0xC0) == 0x80; }

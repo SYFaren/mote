@@ -1,5 +1,4 @@
 #!/bin/sh
-# Resolve CC and make(1) for the current host (Linux, macOS, BSD).
 # shellcheck source=targets.sh
 target_cc() {
   cross="$1"

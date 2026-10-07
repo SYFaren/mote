@@ -1,4 +1,3 @@
-/* mote core — editor.h */
 #ifndef MOTE_EDITOR_H
 #define MOTE_EDITOR_H
 

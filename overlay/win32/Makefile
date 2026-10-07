@@ -1,4 +1,3 @@
-# mote — Win32 overlay (static MinGW cross-build)
 WINCC ?= x86_64-w64-mingw32-gcc
 UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..

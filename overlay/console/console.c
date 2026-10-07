@@ -1,4 +1,3 @@
-/* mote overlay/console — compact ANSI truecolor TTY (C99) */
 #include "platform.h"
 #include "common.h"
 #include "keymap.h"
@@ -16,7 +15,7 @@
 
 #ifdef __linux__
 #if defined(MOTE_MUSL)
-/* musl-gcc: no glibc linux/kd.h — ioctl numbers are stable. */
+/* musl has no linux/kd.h; these ioctl numbers never change. */
 #define KDGKBMODE 0x4B44
 #define KDSKBMODE 0x4B45
 #define K_UNICODE 0x03
@@ -38,7 +37,7 @@ struct Plat {
   int color_mode; /* 0=16 1=256 2=truecolor */
   mote_bool geom_locked;
   Cell *cells;
-  Cell *prev; /* last painted frame — skip unchanged cells (less flicker) */
+  Cell *prev; /* what was painted last, to skip unchanged cells */
   char *clip;
   size_t clip_n;
   struct termios saved;
@@ -83,7 +82,7 @@ static mote_bool resize(Plat *p, int cols, int rows) {
   p->prev = prev;
   p->cols = cols;
   p->rows = rows;
-  /* Force full repaint after resize (prev mismatch). */
+  /* Repaint everything after a resize. */
   for (n = 0; n < (size_t)cols * (size_t)rows; n++) {
     p->prev[n].cp = (mote_u32)~0u;
     p->prev[n].fg = 0;
@@ -120,7 +119,7 @@ static int detect_color_mode(void) {
   return 1;
 }
 
-/* Prefer UTF-8 on modern Linux VTs; MOTE_NO_UTF8 forces byte/meta path. */
+/* UTF-8 by default; MOTE_NO_UTF8 switches to single bytes and meta-bit Alt. */
 static int detect_utf8_console(void) {
   const char *e;
   FILE *f;
@@ -163,9 +162,9 @@ static int rgb_to_16(mote_u32 rgb) {
   int r = (int)((rgb >> 16) & 255), g = (int)((rgb >> 8) & 255), b = (int)(rgb & 255);
   int bright = (r + g + b) >= 380;
   int idx = (r >= 128 ? 1 : 0) | (g >= 128 ? 2 : 0) | (b >= 128 ? 4 : 0);
-  /* Prefer distinct status: strong blue / white */
-  if (b > r + 40 && b > g + 40 && b >= 100) idx = 4; /* blue */
-  if (r > 200 && g > 200 && b > 200) idx = 7;        /* white */
+  /* keep the status bar strong blue with white text */
+  if (b > r + 40 && b > g + 40 && b >= 100) idx = 4;
+  if (r > 200 && g > 200 && b > 200) idx = 7;
   return bright ? idx + 8 : idx;
 }
 
@@ -343,10 +342,10 @@ static void feed_utf8_byte(Plat *p, unsigned char c) {
       if (c < 0x80)
         evq_text(&p->q, (const char *)&c, 1);
       else if (!p->utf8) {
-        /* Legacy VT: single high byte (KOI8/CP866) → Unicode via Latin-1 slot */
+        /* old consoles: a lone high byte (KOI8, CP866) passes through as Latin-1 */
         text_utf8_cp(p, (mote_u32)c);
       } else {
-        /* Unexpected lone continuation — skip */
+        /* stray continuation byte, skip it */
       }
       return;
     }
@@ -355,7 +354,7 @@ static void feed_utf8_byte(Plat *p, unsigned char c) {
     return;
   }
   if ((c & 0xC0) != 0x80) {
-    /* Broken sequence — drop hold, re-parse c */
+    /* broken sequence: drop it and parse c again */
     p->utf8_hold_n = 0;
     feed_utf8_byte(p, c);
     return;
@@ -386,10 +385,8 @@ static void ingest(Plat *p, const unsigned char *buf, int n) {
       continue;
     }
 
-    /*
-     * High bytes: in UTF-8 mode always assemble UTF-8 (Cyrillic). Meta-bit Alt
-     * (legacy Linux VT) only when UTF-8 is off — otherwise D0/D1 become Alt+P.
-     */
+    /* In UTF-8 mode high bytes are always UTF-8 (Cyrillic). They mean
+       meta-bit Alt only with UTF-8 off, or D0 and D1 would read as Alt+P. */
     if (c >= 0x80) {
       if (p->utf8 || p->utf8_hold_n > 0) {
         feed_utf8_byte(p, c);
@@ -444,7 +441,7 @@ static void flush_esc(Plat *p) {
   if (p->in_n != 1 || p->inbuf[0] != 0x1b) return;
   fd.fd = STDIN_FILENO;
   fd.events = POLLIN;
-  /* wait for CSI/SS3/Linux F-key tail (ESC [ [ A etc.) */
+  /* wait for the rest of the escape sequence */
   if (poll(&fd, 1, 250) > 0) {
     n = read(STDIN_FILENO, buf, sizeof buf);
     if (n > 0) ingest(p, buf, (int)n);
@@ -458,7 +455,7 @@ static void check_winch(Plat *p) {
   int cols, rows;
   g_winch = 0;
   if (p->geom_locked) return;
-  /* Always re-read size: some TTYs miss SIGWINCH; also fixes first-paint races. */
+  /* Re-read the size every time: some terminals never send SIGWINCH. */
   tty_size(&cols, &rows);
   clamp_size(&cols, &rows); /* else a huge terminal resizes on every poll */
   if ((cols != p->cols || rows != p->rows) && resize(p, cols, rows))
@@ -474,7 +471,8 @@ Plat *plat_create(const char *title, int w, int h) {
   p->font_px = MOTE_FONT_PX;
   p->color_mode = detect_color_mode();
   p->utf8 = detect_utf8_console() ? MOTE_TRUE : MOTE_FALSE;
-  /* Soft invert caret drifts on Linux VT when UTF-8 width mismatches; use HW. */
+  /* Hardware cursor: an inverted cell drifts on the Linux console when
+     character widths disagree. */
   p->hw_caret = (p->color_mode == 0) ? MOTE_TRUE : MOTE_FALSE;
   tty_size(&cols, &rows);
   if (w >= 40 && w <= MAX_COLS && h >= 10 && h <= MAX_ROWS) {
@@ -502,7 +500,7 @@ Plat *plat_create(const char *title, int w, int h) {
   cfmakeraw(&t);
   t.c_cc[VMIN] = 0;
   t.c_cc[VTIME] = 0;
-  /* Ensure Ctrl+S/Q are not eaten by software flow control. */
+  /* Turn off flow control so Ctrl+S and Ctrl+Q reach us. */
   t.c_iflag &= ~((tcflag_t)(IXON | IXOFF | IXANY));
   if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &t) != 0) {
     free(p->cells);
@@ -519,13 +517,13 @@ Plat *plat_create(const char *title, int w, int h) {
   }
 #endif
   signal(SIGWINCH, on_winch);
-  /* ESC % G — select UTF-8 (Linux VT); without it Cyrillic is 2 cells + bad caret */
+  /* ESC % G puts the Linux console in UTF-8; without it Cyrillic takes two cells */
   if (p->utf8)
     fputs("\033%G", stdout);
   {
     const char *term = getenv("TERM");
     if (!term || (strcmp(term, "linux") && strcmp(term, "console")))
-      fputs("\033[>4;1m", stdout); /* xterm modifyOtherKeys: distinct Ctrl+M vs Enter */
+      fputs("\033[>4;1m", stdout); /* xterm modifyOtherKeys tells Ctrl+M from Enter */
   }
   fputs("\033[?1049h\033[?2004h\033[?25l\033[2J\033[H", stdout);
   if (title && title[0]) printf("\033]0;%s\007", title);
@@ -613,7 +611,7 @@ void plat_clear(Plat *p, mote_u32 rgb) {
   int i, n = p->cols * p->rows;
   for (i = 0; i < n; i++) {
     p->cells[i].cp = ' ';
-    p->cells[i].fg = rgb; /* same as bg → blank */
+    p->cells[i].fg = rgb; /* same color as the background: blank */
     p->cells[i].bg = rgb;
   }
 }
@@ -658,7 +656,7 @@ void plat_end_frame(Plat *p) {
   int y, x;
   mote_u32 lfg = 0xffffffffu, lbg = 0xffffffffu;
 
-  /* Gallery / debug: dump cell grid (incl. last-row status). */
+  /* Dump the cell grid to a file, for screenshots. */
   {
     const char *path = getenv("MOTE_DUMP_CELLS");
     static int dumped;
@@ -690,14 +688,14 @@ void plat_end_frame(Plat *p) {
     }
   }
 
-  /* Row-diff paint: rewrite only changed rows (cuts status flicker on VTs). */
+  /* Rewrite only the rows that changed; less flicker on the console. */
   fputs("\033[?25l", stdout);
   for (y = 0; y < p->rows; y++) {
     int dirty = 0;
     for (x = 0; x < p->cols; x++) {
       Cell cur = p->cells[idx(p, x, y)];
       Cell old = p->prev[idx(p, x, y)];
-      /* Soft caret invert only when not using hardware cursor. */
+      /* Invert the caret cell only without the hardware cursor. */
       if (!p->hw_caret && p->caret_on && x == p->caret_x && y == p->caret_y) {
         mote_u32 t = cur.fg;
         cur.fg = cur.bg;

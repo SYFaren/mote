@@ -1,4 +1,3 @@
-/* mote core — config.c */
 #include "config.h"
 #include "common.h"
 #include "platform.h"

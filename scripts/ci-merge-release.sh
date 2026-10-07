@@ -1,5 +1,4 @@
 #!/bin/sh
-# Merge dist-release/ trees from CI platform jobs and rebuild zip + checksums.
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"

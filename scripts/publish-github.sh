@@ -1,7 +1,4 @@
 #!/bin/sh
-# Publish mote + mote-site to GitHub (repos, Pages, Releases).
-# Run:  sh publish-github.sh
-# Needs: git, gh (logged in), and `make release` (fills dist-release/).
 
 set -eu
 
@@ -10,7 +7,7 @@ SITE_DIR="${SITE_DIR:-$HOME/Projects/mote-site}"
 OWNER="${OWNER:-SYFaren}"
 MOTE_REPO="${MOTE_REPO:-mote}"
 SITE_REPO="${SITE_REPO:-mote-site}"
-TAG="${TAG:-v2.0.0}"
+TAG="${TAG:-v$(sed -n 's/.*MOTE_VERSION "\(.*\)".*/\1/p' "$MOTE_DIR/core/common.h")}"
 RELEASE_TITLE="${RELEASE_TITLE:-$TAG}"
 
 die() { echo "error: $*" >&2; exit 1; }

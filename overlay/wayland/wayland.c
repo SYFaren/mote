@@ -1,4 +1,3 @@
-/* mote overlay/wayland — wl_shm + xdg-shell + xkbcommon */
 #include "platform.h"
 #include "soft.h"
 #include "../evq.h"
@@ -177,7 +176,7 @@ static void xdg_toplevel_configure(void *data, struct xdg_toplevel *top,
   Plat *p = (Plat *)data;
   (void)top;
   (void)states;
-  /* Compositor may pass 0,0 = "client chooses". Keep current size then. */
+  /* 0x0 means the client picks; keep the current size. */
   if (w > 0 && h > 0) {
     if (w < MOTE_MIN_WIN_W) w = MOTE_MIN_WIN_W;
     if (h < MOTE_MIN_WIN_H) h = MOTE_MIN_WIN_H;
@@ -267,7 +266,7 @@ static int sym_char(xkb_keysym_t sym) {
   }
 }
 
-/* Shortcut or navigation key → PE_KEY; MOTE_FALSE if it should type text. */
+/* Shortcuts and navigation keys become PE_KEY; MOTE_FALSE means the key types text. */
 static mote_bool map_sym(Plat *p, xkb_keycode_t code, xkb_keysym_t sym) {
   int ch = sym_char(sym);
   PlatKey pk = PK_NONE;
@@ -463,7 +462,7 @@ static void ptr_axis_value120(void *d, struct wl_pointer *p, uint32_t a, int32_t
   (void)a;
   (void)v;
 }
-/* Designated so newer headers' extra events (sent only to seat v9+) stay NULL. */
+/* Named fields, so events that newer headers add (seat v9 and up) stay NULL. */
 static const struct wl_pointer_listener ptr_listener = {
     .enter = ptr_enter,
     .leave = ptr_leave,
@@ -551,7 +550,8 @@ Plat *plat_create(const char *title, int w, int h) {
   xdg_toplevel_set_title(p->top, title ? title : "mote");
   xdg_toplevel_set_app_id(p->top, "mote");
   xdg_toplevel_set_min_size(p->top, MOTE_MIN_WIN_W, MOTE_MIN_WIN_H);
-  /* No CSD of our own: without server-side decorations (e.g. GNOME) the window stays bare. */
+  /* We draw no decorations ourselves, so without server-side ones (GNOME)
+   the window has no frame. */
   if (p->deco_mgr) {
     p->deco = zxdg_decoration_manager_v1_get_toplevel_decoration(p->deco_mgr, p->top);
     zxdg_toplevel_decoration_v1_set_mode(p->deco,
@@ -647,8 +647,8 @@ void plat_end_frame(Plat *p) {
   soft_blit_caret(&p->fb);
   if (!p->fb.px || !p->surf) return;
   if (!make_bufs(p)) return;
-  /* Wait until a SHM slot is free — never write into a buffer the compositor
-   * is still reading (single-buffer caused torn / striped frames). */
+  /* Wait for a free buffer: drawing into one the compositor is still reading
+     tears the frame. */
   while (!(slot = free_slot(p))) {
     if (wl_display_dispatch(p->dpy) == -1) return;
   }

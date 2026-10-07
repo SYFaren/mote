@@ -1,4 +1,3 @@
-/* mote soft RGB framebuffer */
 #include "soft.h"
 #include "utf8.h"
 
@@ -23,7 +22,7 @@ mote_bool soft_resize(SoftFb *fb, int w, int h) {
   sz = (size_t)w * (size_t)h;
   n = (mote_u32 *)realloc(fb->px, sz * sizeof(mote_u32));
   if (!n) return MOTE_FALSE;
-  /* Uninitialized growth looked like stripes/noise until the next full draw. */
+  /* new memory would show as noise until the next full redraw */
   memset(n, 0, sz * sizeof(mote_u32));
   fb->px = n;
   fb->w = w;
@@ -37,8 +36,8 @@ void soft_free(SoftFb *fb) {
   fb->w = fb->h = 0;
 }
 
-/* The bitmap font only scales by whole multiples of 16px, so round toward the
-   request: Ctrl+= from 16 asks for 17 and must land on 32, not back on 16. */
+/* The font scales in whole steps of 16 px, so round in the direction asked:
+   Ctrl+= from 16 asks for 17 and has to land on 32, not back on 16. */
 void soft_set_font_px(SoftFb *fb, int px) {
   int sc = px > fb->font_px ? (px + SOFT_FONT_H - 1) / SOFT_FONT_H : px / SOFT_FONT_H;
   if (sc < 1) sc = 1;
@@ -132,9 +131,9 @@ void soft_draw_text(SoftFb *fb, int x, int y, const char *s, int n, mote_u32 rgb
     else if (cp == 0x2026)
       cp = (mote_u32)'.';
     else if (cp == 0x00B7 || cp == 0x2022 || cp == 0x2219)
-      cp = (mote_u32)'.'; /* · • ∙ — whitespace markers */
+      cp = (mote_u32)'.'; /* space markers */
     else if (cp == 0x00BB || cp == 0x203A)
-      cp = (mote_u32)'>'; /* » › — tab markers */
+      cp = (mote_u32)'>'; /* tab markers */
     put_glyph(fb, cx, y, cp, rgb);
     cx += adv;
   }

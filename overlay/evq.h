@@ -1,4 +1,3 @@
-/* mote overlay — event queue and typed-text batching shared by overlays */
 #ifndef MOTE_EVQ_H
 #define MOTE_EVQ_H
 

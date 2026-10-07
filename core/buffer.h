@@ -1,4 +1,3 @@
-/* mote core — buffer.h */
 #ifndef MOTE_BUFFER_H
 #define MOTE_BUFFER_H
 

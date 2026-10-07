@@ -1,4 +1,3 @@
-/* mote core — theme.h */
 #ifndef MOTE_THEME_H
 #define MOTE_THEME_H
 

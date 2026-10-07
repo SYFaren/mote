@@ -1,5 +1,4 @@
-# mote — root Makefile
-# Project-local cross toolchains (~/.local/opt, see docs/BUILD.md)
+# cross toolchains live in ~/.local/opt, see docs/BUILD.md
 export PATH := $(HOME)/.local/opt/djgpp/bin:$(HOME)/.local/opt/emsdk/upstream/emscripten:$(HOME)/.local/opt/emsdk:$(PATH)
 
 .PHONY: all x11 win32 console winconsole dos sdl sdl3 wayland fbdev wasm \

@@ -1,4 +1,3 @@
-/* mote — terminal (TTY) overlay entry */
 #include "app.h"
 
 static const MoteApp app = {

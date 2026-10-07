@@ -1,4 +1,3 @@
-/* mote core — hl.h */
 #ifndef MOTE_HL_H
 #define MOTE_HL_H
 

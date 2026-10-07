@@ -1,4 +1,3 @@
-/* mote overlay/win32 — files and config path; every path is UTF-8 */
 #include "platform.h"
 #include "common.h"
 #include "mote_snprintf.h"
@@ -60,8 +59,8 @@ void plat_fsync_file(FILE *f) {
   if (fd >= 0) (void)_commit(fd);
 }
 
-/* %APPDATA%\mote\config. Read APPDATA wide: the ANSI value cannot hold
-   e.g. a Cyrillic user name on a non-Cyrillic system locale. */
+/* %APPDATA%\mote\config. APPDATA is read as UTF-16: the ANSI value cannot
+   hold a Cyrillic user name on a non-Cyrillic system locale. */
 int plat_config_path(char *out, size_t n) {
   const wchar_t *home = _wgetenv(L"APPDATA");
   char *dir;

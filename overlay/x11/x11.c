@@ -1,4 +1,3 @@
-/* mote overlay/x11 */
 #include "platform.h"
 #include "keymap.h"
 #include "common.h"
@@ -28,7 +27,7 @@ struct Plat {
   long event_mask;
   char *clip_store;
   size_t clip_len;
-  /* INCR send to another client */
+  /* INCR transfer to another client */
   Window incr_req;
   Atom incr_prop;
   Atom incr_target;
@@ -98,7 +97,7 @@ static unsigned long rgb_pixel(Plat *p, mote_u32 rgb) {
   unsigned r = (rgb >> 16) & 0xFF;
   unsigned g = (rgb >> 8) & 0xFF;
   unsigned b = rgb & 0xFF;
-  /* TrueColor: no XAllocColor — avoids colormap leak under heavy redraw. */
+  /* TrueColor needs no XAllocColor, which would leak colormap entries. */
   if (v && (v->class == TrueColor || v->class == DirectColor)) {
     return scale_chan(r, v->red_mask) | scale_chan(g, v->green_mask) |
            scale_chan(b, v->blue_mask);
@@ -117,7 +116,7 @@ static unsigned long rgb_pixel(Plat *p, mote_u32 rgb) {
 
 static int x_io_error(Display *d) {
   (void)d;
-  /* Don't abort process — main loop will see connection death. */
+  /* Don't exit here; the main loop notices the lost connection. */
   return 0;
 }
 
@@ -311,7 +310,7 @@ static void incr_send_chunk(Plat *p) {
   p->incr_off += n;
 }
 
-/* ICCCM INCR receive — st/glfw pattern, capped at MOTE_MAX_FILE. */
+/* Receive an ICCCM INCR transfer, up to MOTE_MAX_FILE. */
 static char *clip_read_property(Plat *p, Atom prop, size_t *out_len) {
   Atom actual_type;
   int actual_format;
@@ -339,7 +338,7 @@ static char *clip_read_property(Plat *p, Atom prop, size_t *out_len) {
       mote_bool got = MOTE_FALSE;
       size_t chunk;
       struct pollfd pfd;
-      if (++rounds > 500) { /* ~10s wall with 20ms polls */
+      if (++rounds > 500) { /* about 10 s of 20 ms polls */
         free(out);
         out = NULL;
         total = 0;
@@ -642,7 +641,7 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
       if (p->clip_store &&
           (req->target == XA_STRING || req->target == p->utf8)) {
         if (p->incr_active) {
-          /* refuse overlapping INCR — keep current transfer intact */
+          /* one INCR transfer at a time */
         } else if (p->clip_len > q) {
           long sz = (long)p->clip_len;
           p->incr_active = MOTE_TRUE;

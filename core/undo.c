@@ -1,4 +1,3 @@
-/* mote core — undo.c */
 #include "undo.h"
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +37,6 @@ mote_bool undo_push(UndoStack *u, UndoKind kind, size_t pos, const char *text,
   for (i = u->head; i < u->n; i++) free_act(&u->items[i]);
   u->n = u->head;
 
-  /* Coalesce typing: extend last insert if contiguous and small. */
   if (coalesce && kind == U_INSERT && len > 0 && len <= 4 && u->head > 0) {
     a = &u->items[u->head - 1];
     if (a->kind == U_INSERT && a->pos + a->len == pos && a->len < 64) {

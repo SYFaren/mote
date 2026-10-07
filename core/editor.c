@@ -1,4 +1,3 @@
-/* mote core — editor.c */
 #include "editor.h"
 #include "theme.h"
 #include "hl.h"
@@ -1136,7 +1135,7 @@ static size_t bookmark_target_row(Doc *d) {
   len = buf_len(&d->buf);
   ls = line_start(d, d->caret);
   le = line_end(d, ls);
-  /* Ignore phantom empty line after trailing newline at EOF. */
+  /* A newline at the very end does not start another line. */
   if (row > 0 && ls == le && ls == len) row--;
   if (d->lines.n && row >= d->lines.n) row = d->lines.n - 1;
   return row;
@@ -1659,7 +1658,7 @@ static void find_begin(Editor *e, Doc *d) {
   d->match_a = d->match_b = 0;
 }
 
-/* Find prompt -> search pattern: "/re/" is a regex, anything else text. */
+/* "/re/" in the Find prompt is a regex, anything else is plain text. */
 static void find_from_prompt(Editor *e) {
   char pat[sizeof e->find], repl[sizeof e->replace];
   e->find_regex = parse_slash_cmd(e->prompt, pat, sizeof pat, repl, sizeof repl);
@@ -2093,7 +2092,7 @@ static void draw_range(Editor *e, Doc *d, Plat *p, size_t a, size_t b, int y,
       if (i == d->bracket_a || i == d->bracket_b) hk = HL_BRACKET;
       fg = hl_color(t, hk);
       if (e->show_ws && (cp == ' ' || cp == '\t')) {
-        /* Cell consoles: ASCII only — U+00B7/» break VT width and thrash redraw. */
+        /* Text consoles get plain . and >: terminals disagree on the width of · and ». */
         char gch = (cp == ' ') ? '.' : '>';
         if (e->cw > 1) {
           const char *glyph = (cp == ' ') ? "\xC2\xB7" : "\xC2\xBB"; /* · » */

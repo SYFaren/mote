@@ -2,8 +2,7 @@
 build/
 **/build/
 **/build-*/
-dist-release/*
-!dist-release/.gitkeep
+dist-release/
 
 # objects / editor junk
 *.o
@@ -15,15 +14,6 @@ dist-release/*
 __pycache__/
 *.pyc
 
-# scratch at repo root
-/out.c
-/sout.c
-
-# packed copies (optional UPX artifacts under build/)
-*.packed
-*.packed.exe
-
-# toolchain packages / local scratch
-*.deb
+# local scratch
 demo-media/
 shots/

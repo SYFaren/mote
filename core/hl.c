@@ -1,4 +1,3 @@
-/* mote core — hl.c (packed pool + offset HLDB, runtime views) */
 #include "hl.h"
 #include "common.h"
 #include <ctype.h>
@@ -204,7 +203,7 @@ const HlSyntax *hl_select(const char *path) {
     for (fm = HLVIEW[i].exts; fm && *fm; fm += strlen(fm) + 1) {
       if (fm[0] == '.') {
         dot = strrchr(base, '.');
-        /* DOS / some FS fold extensions to UPPER — match case-insensitively. */
+        /* DOS keeps names in upper case, so DEMO.C is still C. */
         if (dot && str_eq_ci(dot, fm)) return &HLVIEW[i];
       } else if (str_eq_ci(base, fm)) {
         return &HLVIEW[i];

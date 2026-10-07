@@ -1,4 +1,3 @@
-# mote — SDL2 overlay (SDL3: make MOTE_SDL3=1)
 CC ?= gcc
 UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..

@@ -1,4 +1,3 @@
-/* mote core — common.h */
 #ifndef MOTE_COMMON_H
 #define MOTE_COMMON_H
 

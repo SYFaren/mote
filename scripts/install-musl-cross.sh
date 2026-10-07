@@ -1,6 +1,4 @@
 #!/bin/sh
-# Fetch musl cross toolchains into ~/.local/opt/musl-cross (or MUSL_CROSS_ROOT).
-# CI: Bootlin (toolchains.bootlin.com). Local: musl.cc with Bootlin fallback.
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"

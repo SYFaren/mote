@@ -1,4 +1,3 @@
-/* mote — stubs so core unit tests link without a GUI overlay */
 #define _POSIX_C_SOURCE 200809L
 #include "platform.h"
 #include <stdio.h>

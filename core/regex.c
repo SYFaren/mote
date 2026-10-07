@@ -1,5 +1,3 @@
-/* mote core — compact backtracking regex (. * + ? ^ $ [] \d \w \s);
-   ^ and $ match at line boundaries. */
 #include "regex.h"
 #include <ctype.h>
 

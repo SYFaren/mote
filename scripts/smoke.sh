@@ -1,5 +1,4 @@
 #!/bin/sh
-# Full platform smoke: build, --version, link, optional headless open.
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -78,7 +77,7 @@ if command -v xvfb-run >/dev/null 2>&1; then
   for pair in "x11:overlay/x11/build/mote" "sdl2:overlay/sdl/build/mote"; do
     name=${pair%%:*}
     bin=${pair#*:}
-    if xvfb-run -a -s "-screen 0 800x600x24" timeout 2s "$bin" -g 640x400 examples/hello_mote.c \
+    if xvfb-run -a -s "-screen 0 800x600x24" timeout 2s "$bin" -g 640x400 core/buffer.c \
          >/tmp/mote-smoke-"$name".log 2>&1; then
       ok "headless $name exit0"
     else
@@ -92,7 +91,7 @@ if command -v xvfb-run >/dev/null 2>&1; then
   rm -f /tmp/mote-smoke-help.ppm
   xvfb-run -a -s "-screen 0 900x600x24" sh -c "
     MOTE_START_HELP=1 MOTE_DUMP_FB=/tmp/mote-smoke-help.ppm \
-      timeout 2s ./overlay/sdl/build/mote -H -g 720x420 examples/hello_mote.c \
+      timeout 2s ./overlay/sdl/build/mote -H -g 720x420 core/buffer.c \
       >/dev/null 2>&1 || true
   " || true
   if [ -f /tmp/mote-smoke-help.ppm ] && python3 - <<'PY'

@@ -1,11 +1,10 @@
-/* mote core — keymap.c */
 #include "keymap.h"
 #include "common.h"
 
 PlatKey key_ctrl(int ch, mote_bool shift) {
   switch (MOTE_LOWER(ch)) {
   case 'a': return PK_SELALL;
-  case 'b': return shift ? PK_BOOKMARK_SET : PK_BOOKMARK; /* TTYs: ^M is Enter */
+  case 'b': return shift ? PK_BOOKMARK_SET : PK_BOOKMARK; /* terminals send Ctrl+M as Enter */
   case 'c': return PK_COPY;
   case 'd': return PK_DUPLINE;
   case 'e': return shift ? PK_EOL : PK_RECENT;

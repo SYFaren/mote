@@ -1,4 +1,3 @@
-/* mote — platform contract (overlays implement this). ANSI C89 header. */
 #ifndef MOTE_PLATFORM_H
 #define MOTE_PLATFORM_H
 

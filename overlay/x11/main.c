@@ -1,4 +1,3 @@
-/* mote — X11 overlay entry */
 #include "app.h"
 
 static const MoteApp app = {

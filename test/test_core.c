@@ -1,4 +1,3 @@
-/* mote — buffer / utf8 / undo / hl self-test — SYFaren */
 #define _POSIX_C_SOURCE 200809L
 #include "buffer.h"
 #include "utf8.h"
@@ -92,7 +91,7 @@ int main(void) {
   CHECK(undo_push(&u, U_INSERT, 2, "!", 1, MOTE_FALSE));
   CHECK(u.head == 2);
 
-  /* DOS folds .c → .C — HL must still select C syntax */
+  /* DOS turns .c into .C and it must still be C */
   syn = hl_select("hello.c");
   CHECK(syn != NULL && strcmp(hl_lang_name(syn), "c/c++") == 0);
   syn = hl_select("HELLO.C");

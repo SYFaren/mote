@@ -1,4 +1,3 @@
-/* Shared RGB soft-framebuffer + bitmap font for GUI overlays. */
 #ifndef MOTE_SOFT_H
 #define MOTE_SOFT_H
 
@@ -22,7 +21,7 @@ void soft_clear(SoftFb *fb, mote_u32 rgb);
 void soft_fill_rect(SoftFb *fb, int x, int y, int w, int h, mote_u32 rgb);
 void soft_draw_text(SoftFb *fb, int x, int y, const char *s, int n, mote_u32 rgb);
 void soft_blit_caret(SoftFb *fb);
-/* MOTE_DUMP_FB=/path.ppm: write the first presented frame (screenshots). */
+/* With MOTE_DUMP_FB=file.ppm, saves the first frame shown (for screenshots). */
 void soft_dump_once(const SoftFb *fb);
 
 #endif

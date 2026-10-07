@@ -1,5 +1,4 @@
 #!/bin/sh
-# Cross-build Linux (glibc) and Windows i686 release ports from a Linux host.
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"

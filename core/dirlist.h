@@ -1,4 +1,3 @@
-/* mote core — list files in a directory for quick-open */
 #ifndef MOTE_DIRLIST_H
 #define MOTE_DIRLIST_H
 

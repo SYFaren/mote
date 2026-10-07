@@ -1,5 +1,3 @@
-# mote — WebAssembly (Emscripten + SDL2)
-# Needs: source ~/.local/opt/emsdk/emsdk_env.sh
 EMCC ?= emcc
 ROOT := ../..
 
@@ -11,7 +9,6 @@ INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat -I../soft
 CFLAGS = -std=gnu99 -Wall -O2 -DNDEBUG $(INCLUDES)
 LDFLAGS = -sUSE_SDL=2 -sALLOW_MEMORY_GROWTH=1 -sASYNCIFY \
 	-sFORCE_FILESYSTEM=1 --shell-file shell.html \
-	--preload-file ../../examples/hello_mote.c@hello_mote.c \
 	-sEXPORTED_RUNTIME_METHODS=['ccall']
 
 .PHONY: all clean serve

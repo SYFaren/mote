@@ -1,4 +1,3 @@
-# mote — X11 overlay
 CC ?= gcc
 UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..

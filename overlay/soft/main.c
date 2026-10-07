@@ -1,9 +1,8 @@
-/* mote — entry for the soft-framebuffer overlays (SDL, Wayland, fbdev, web) */
 #include "app.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 
-/* The first paint can race the page's CSS layout: yield, then redraw. */
+/* In the browser the first paint may come before the page layout is done. */
 static void web_after_first_draw(Editor *e) {
   emscripten_sleep(0);
   e->need_draw = MOTE_TRUE;

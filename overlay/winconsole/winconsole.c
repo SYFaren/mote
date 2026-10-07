@@ -1,4 +1,3 @@
-/* mote overlay/winconsole — Windows ConHost / VT console (MinGW) */
 #include "platform.h"
 #include "common.h"
 #include "utf8.h"
@@ -23,7 +22,7 @@ struct Plat {
   DWORD in_mode_saved, out_mode_saved;
   UINT in_cp_saved, out_cp_saved;
   Cell *cells;
-  Cell *prev; /* last painted (caret applied) — skip unchanged rows */
+  Cell *prev; /* what was painted last, caret included, to skip unchanged rows */
   CHAR_INFO *outbuf;
   char *vtbuf;
   size_t vtbuf_n, vtbuf_cap;
@@ -73,7 +72,7 @@ static WORD nearest_attr_fg(mote_u32 rgb) {
 }
 
 static WORD nearest_attr_bg(mote_u32 rgb) {
-  /* reuse FG mapper bits shifted to background */
+  /* same mapping as the foreground, moved to the background bits */
   WORD fg = nearest_attr_fg(rgb);
   WORD bg = 0;
   if (fg & FOREGROUND_BLUE) bg |= BACKGROUND_BLUE;
@@ -146,7 +145,7 @@ static mote_bool resize(Plat *p, int cols, int rows) {
   p->outbuf = o;
   p->cols = cols;
   p->rows = rows;
-  /* Force full repaint after resize. */
+  /* Repaint everything after a resize. */
   for (i = 0; i < n; i++) {
     p->prev[i].cp = (mote_u32)~0u;
     p->prev[i].fg = 0;
@@ -193,9 +192,9 @@ static int running_on_wine(void) {
   return nt && GetProcAddress(nt, "wine_get_version") != NULL;
 }
 
-/* Raster OEM fonts lack Cyrillic; prefer a TrueType face with BMP coverage. */
+/* Raster fonts have no Cyrillic, so pick a TrueType one. */
 static void prefer_unicode_font(HANDLE hout) {
-  /* Vista+; resolved at runtime so the exe still loads on XP. */
+  /* Vista and later; looked up at runtime so the exe still starts on XP. */
   typedef BOOL(WINAPI * FontExFn)(HANDLE, BOOL, PCONSOLE_FONT_INFOEX);
   HMODULE k32 = GetModuleHandleA("kernel32.dll");
   FontExFn get_font =
@@ -222,7 +221,7 @@ static void prefer_unicode_font(HANDLE hout) {
   }
 }
 
-/* Optional: dump cell grid for gallery (MOTE_DUMP_CELLS=path.cells). */
+/* With MOTE_DUMP_CELLS=file, dumps the cell grid (for screenshots). */
 static void dump_cells_file(Plat *p) {
   const char *path;
   FILE *f;
@@ -280,11 +279,9 @@ Plat *plat_create(const char *title, int w, int h) {
   SetConsoleMode(p->hin, im);
   om = p->out_mode_saved;
   om |= ENABLE_PROCESSED_OUTPUT;
-  /*
-   * VT truecolor is slow (escape storm, esp. with whitespace dots) and often
-   * mangled Cyrillic via WriteConsole. Default: CHAR_INFO + WriteConsoleOutputW.
-   * Opt in: MOTE_VT=1
-   */
+  /* VT truecolor output is slow (lots of escapes, worse with whitespace
+     dots) and WriteConsole often mangles Cyrillic. So the default is
+     CHAR_INFO with WriteConsoleOutputW; MOTE_VT=1 turns VT on. */
   p->vt = MOTE_FALSE;
 #ifdef ENABLE_VIRTUAL_TERMINAL_PROCESSING
   if (!running_on_wine() && getenv("MOTE_VT") && getenv("MOTE_VT")[0] == '1') {
@@ -434,7 +431,7 @@ static void vt_write(Plat *p, const char *s, size_t n) {
   p->vtbuf_n += n;
 }
 
-/* UTF-8 → UTF-16 via WriteConsoleW: reliable Cyrillic with VT enabled. */
+/* UTF-16 for WriteConsoleW, which keeps Cyrillic intact in VT mode. */
 static void vt_flush(Plat *p) {
   int wn;
   DWORD written = 0;
@@ -500,7 +497,7 @@ void plat_end_frame(Plat *p) {
 
   dump_cells_file(p);
   if (getenv("MOTE_SHOT_ONCE")) {
-    /* First painted frame is enough for gallery dumps. */
+    /* One frame is enough for a screenshot dump. */
     ExitProcess(0);
   }
 
@@ -560,7 +557,7 @@ void plat_end_frame(Plat *p) {
     }
   }
 
-  /* Dirty-row WriteConsoleOutputW — Unicode BMP (Cyrillic) intact. */
+  /* Only changed rows, through WriteConsoleOutputW, which keeps Cyrillic intact. */
   for (y = 0; y < p->rows; y++) {
     CHAR_INFO *row;
     if (!row_dirty(p, y)) continue;

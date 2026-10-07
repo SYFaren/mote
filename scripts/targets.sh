@@ -1,5 +1,4 @@
 #!/bin/sh
-# Cross/toolchain prefixes for build-port.sh ( POSIX sh, source only )
 
 target_cross() {
   os="$1"

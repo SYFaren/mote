@@ -1,6 +1,3 @@
-# Shared squeeze flags for mote overlays
-# Tiny binary: LTO + GC sections, no unwind/ident/build-id, hidden syms.
-
 _MOTE_UNAME := $(shell uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')
 _MOTE_MACHINE := $(shell uname -m 2>/dev/null)
 

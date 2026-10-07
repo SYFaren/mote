@@ -1,4 +1,3 @@
-/* mote overlay/dos — file + config (DJGPP) */
 #include "platform.h"
 #include "common.h"
 #include "mote_snprintf.h"
@@ -30,7 +29,7 @@ void plat_fsync_file(FILE *f) {
   if (fd >= 0) (void)fsync(fd);
 }
 
-/* Config: MOTE\CONFIG under cwd */
+/* MOTE\CONFIG in the current folder */
 int plat_config_path(char *out, size_t n) {
   mkdir("MOTE", 0755);
   if (mote_snprintf(out, n, "MOTE/CONFIG") >= (int)n) return -1;

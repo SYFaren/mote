@@ -1,4 +1,3 @@
-/* mote core — buffer.c */
 #include "buffer.h"
 #include "platform.h"
 #include "utf8.h"
@@ -117,7 +116,7 @@ mote_bool buf_match_ci(const Buf *b, size_t pos, const char *s, size_t n) {
   return buf_match_ex(b, pos, s, n, 1);
 }
 
-/* Reclaim oversized gap after heavy deletes (stability / RAM). */
+/* Give memory back after large deletes. */
 void buf_shrink_gap(Buf *b) {
   size_t len, g, nc, after;
   char *nd;
@@ -165,7 +164,7 @@ char *buf_strdup(const Buf *b) {
   return s;
 }
 
-/* CP1251 → Unicode (Windows Russian ANSI). */
+/* Windows-1251 byte to a Unicode code point. */
 static mote_u32 cp1251_u(unsigned char c) {
   static const mote_u32 map_80_bf[64] = {
       0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021, 0x20AC,
@@ -193,13 +192,13 @@ static int bytes_are_utf8(const char *s, size_t n) {
   return 1;
 }
 
-/* If file is CP1251 (common on Windows), rewrite gap buffer as UTF-8. */
+/* A file that is not valid UTF-8 is taken as Windows-1251 and converted. */
 static mote_bool ensure_utf8_text(Buf *b) {
   size_t len = buf_len(b), i, out_n = 0, capa;
   char *tmp, *src;
   int has_hi = 0;
   if (!len || !b->data) return MOTE_TRUE;
-  move_gap(b, len); /* contiguous at start */
+  move_gap(b, len); /* text is one block now */
   src = b->data;
   for (i = 0; i < len; i++) {
     if ((unsigned char)src[i] >= 0x80) {
@@ -209,7 +208,7 @@ static mote_bool ensure_utf8_text(Buf *b) {
   }
   if (!has_hi) return MOTE_TRUE;
   if (bytes_are_utf8(src, len)) return MOTE_TRUE;
-  /* Worst case: every byte → 3-byte UTF-8 */
+  /* each byte becomes at most 3 UTF-8 bytes */
   capa = len * 3 + 1;
   tmp = (char *)malloc(capa);
   if (!tmp) return MOTE_FALSE;
@@ -264,7 +263,6 @@ mote_bool buf_load(Buf *b, const char *path) {
     buf_free(b);
     return MOTE_FALSE;
   }
-  /* Strip UTF-8 BOM */
   if (n >= 3 && (unsigned char)b->data[0] == 0xEF &&
       (unsigned char)b->data[1] == 0xBB && (unsigned char)b->data[2] == 0xBF) {
     memmove(b->data, b->data + 3, n - 3);
@@ -285,8 +283,7 @@ mote_bool buf_save(const Buf *b, const char *path) {
   size_t len, i, n;
   if (!path || !path[0] || !b->data) return MOTE_FALSE;
   len = buf_len(b);
-  /* Temp name must be legal on DOS 8.3 (A.C.tmp is not). Keep Unix-style
-   * path.tmp elsewhere for unique parallel saves. */
+  /* 8.3 names allow one dot, so DOS gets a fixed temp name in the same folder. */
 #if defined(__DJGPP__) || defined(__MSDOS__) || defined(MSDOS)
   {
     const char *slash = strrchr(path, '/');

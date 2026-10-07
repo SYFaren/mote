@@ -1,7 +1,3 @@
-/* mote core — mote_snprintf.c: bounded formatter for C89, which has no
-   vsnprintf. Supports %s %c %d %i %u %x %X %%, the l length, '-' and '0'
-   flags, width and precision (both may be '*'). Returns the full length
-   the output needed, like C99 snprintf, so `r >= n` means truncated. */
 #include "mote_snprintf.h"
 #include <string.h>
 

@@ -1,4 +1,3 @@
-/* mote overlay/sdl — SDL2 (default) or SDL3 (-DMOTE_SDL3) */
 #include "platform.h"
 #include "keymap.h"
 #include "soft.h"
@@ -19,8 +18,9 @@
 #include <string.h>
 #include <stdio.h>
 
-/* Native SDL2: blit soft FB → window surface (1:1). Renderer path is for
- * SDL3 / Emscripten where GetWindowSurface is missing or unreliable. */
+/* Desktop SDL2 copies the framebuffer straight to the window surface.
+   SDL3 and the browser go through a renderer: the window surface is
+   missing or unreliable there. */
 #if defined(MOTE_SDL3) || defined(__EMSCRIPTEN__)
 #define MOTE_SDL_RENDERER 1
 #endif
@@ -122,7 +122,8 @@ static mote_bool ensure_tex(Plat *p) {
     p->tex = NULL;
   }
   if (p->fb.w < 1 || p->fb.h < 1) return MOTE_FALSE;
-  /* Soft FB is 0x00RRGGBB → XRGB8888. ARGB+A=0 caused stripes on some GPUs. */
+  /* The framebuffer is 0x00RRGGBB, which is XRGB8888; ARGB with zero alpha
+   shows stripes on some GPUs. */
   p->tex = SDL_CreateTexture(p->ren, SDL_PIXELFORMAT_XRGB8888,
                              SDL_TEXTUREACCESS_STREAMING, p->fb.w, p->fb.h);
   if (!p->tex)
@@ -146,7 +147,8 @@ static void fb_resize(Plat *p, int w, int h) {
 #endif
 }
 
-/* Keep soft FB pixel-identical to the drawable — avoids fractional scale stripes. */
+/* Keep the framebuffer the same pixel size as the drawable, or fractional
+   scaling draws stripes. */
 static mote_bool sync_drawable_size(Plat *p) {
   int w = 0, h = 0;
 #if defined(MOTE_SDL3)
@@ -172,7 +174,7 @@ static mote_bool sync_drawable_size(Plat *p) {
 }
 
 #ifdef __EMSCRIPTEN__
-/* Match soft FB + SDL window to the visible #stage CSS box. */
+/* Size the framebuffer and window to the visible #stage box on the page. */
 static mote_bool sync_em_canvas(Plat *p) {
   double css_w = 0, css_h = 0;
   int w, h;
@@ -186,8 +188,8 @@ static mote_bool sync_em_canvas(Plat *p) {
   h = (int)css_h;
   if (w < MOTE_MIN_WIN_W) w = MOTE_MIN_WIN_W;
   if (h < MOTE_MIN_WIN_H) h = MOTE_MIN_WIN_H;
-  /* Do not touch the canvas / window when size is unchanged — calling
-   * set_canvas_element_size every poll clears the bitmap and flickers. */
+  /* Leave the canvas alone when the size is the same: setting it on every
+     poll clears it and flickers. */
   if (w == p->fb.w && h == p->fb.h) return MOTE_FALSE;
   emscripten_set_canvas_element_size("#canvas", w, h);
   fb_resize(p, w, h);
@@ -222,8 +224,8 @@ Plat *plat_create(const char *title, int w, int h) {
                             SDL_WINDOW_RESIZABLE);
   if (!p->win) { fail_create(p); return NULL; }
 #ifdef MOTE_SDL_RENDERER
-  /* Prefer accelerated+vsync. SOFTWARE first was used historically and made
-   * the Emscripten build crawl / flicker. */
+  /* Accelerated with vsync first; the software renderer makes the browser
+     build slow and flickery. */
   p->ren = SDL_CreateRenderer(p->win, -1,
                               SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
   if (!p->ren) p->ren = SDL_CreateRenderer(p->win, -1, SDL_RENDERER_PRESENTVSYNC);
@@ -270,9 +272,9 @@ void plat_destroy(Plat *p) {
 void plat_wait(Plat *p) {
   if (p->q.n > 0) return;
 #ifdef __EMSCRIPTEN__
-  /* Do not block forever: the first CSS layout often lands after the
-   * initial ed_draw, and a blocking WaitEvent leaves a black canvas until
-   * the user clicks. Timeout + sync pushes PE_EXPOSE when size settles. */
+  /* Don't wait forever: the page layout often settles after the first
+     ed_draw, and a blocking wait would leave a black canvas until a click.
+     The timeout lets the size sync send PE_EXPOSE. */
   if (sync_em_canvas(p)) {
     evq_type(&p->q, PE_EXPOSE);
     return;
@@ -296,8 +298,8 @@ static mote_bool window_event(Plat *p, const SDL_Event *se) {
 #else
   if (se->type != SDL_WINDOWEVENT) return MOTE_FALSE;
 #ifndef __EMSCRIPTEN__
-  /* Emscripten: size is owned by sync_em_canvas (CSS box); following SDL
-   * resize events too would loop SetWindowSize ↔ SIZE_CHANGED. */
+  /* In the browser sync_em_canvas owns the size; following SDL resize events
+     as well would bounce between SetWindowSize and SIZE_CHANGED. */
   if (se->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
     fb_resize(p, se->window.data1, se->window.data2);
     sync_drawable_size(p);
@@ -392,8 +394,8 @@ static void present(Plat *p) {
   void *pixels;
   int pitch, y, x;
   if (!p->tex) return;
-  /* Lock + opaque alpha: Emscripten canvas treats A=0 as invisible, so a
-   * raw UpdateTexture of 0x00RRGGBB often shows a black page until redraw. */
+  /* Lock and set alpha: the browser canvas treats zero alpha as transparent,
+     so plain 0x00RRGGBB pixels show a black page. */
   if (SDL_OK(SDL_LockTexture(p->tex, NULL, &pixels, &pitch))) {
     for (y = 0; y < p->fb.h; y++) {
       const mote_u32 *src = p->fb.px + (size_t)y * (size_t)p->fb.w;

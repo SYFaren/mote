@@ -1,4 +1,3 @@
-/* mote core — utf8.h */
 #ifndef MOTE_UTF8_H
 #define MOTE_UTF8_H
 

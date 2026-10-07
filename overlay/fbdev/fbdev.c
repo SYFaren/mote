@@ -1,4 +1,3 @@
-/* mote overlay/fbdev — Linux /dev/fb0 software framebuffer */
 #include "platform.h"
 #include "soft.h"
 #include "../evq.h"

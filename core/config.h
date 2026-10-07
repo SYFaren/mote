@@ -1,4 +1,3 @@
-/* mote core — config.h */
 #ifndef MOTE_CONFIG_H
 #define MOTE_CONFIG_H
 

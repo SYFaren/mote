@@ -1,4 +1,3 @@
-/* mote — DOS (DJGPP) overlay entry */
 #include "app.h"
 
 static const MoteApp app = {

@@ -20,6 +20,7 @@ DOS and in the browser.
 make                 # Linux X11
 make console         # Unix terminal
 make test && make smoke
+sh scripts/install-local.sh   # install the terminal build as ~/.local/bin/mote
 ```
 
 Other ports: `make wayland`, `make sdl`, `make sdl3`, `make fbdev`, `make win32`,
@@ -245,7 +246,7 @@ core/       buffer, editor, keymap, utf8, undo, hl, regex, theme, config
 plat/       platform.h
 overlay/    x11 · wayland · sdl · fbdev · console · win32 · winconsole · dos · wasm
 docs/       BUILD.md
-scripts/    smoke, release helpers, install-local
+scripts/    smoke, release, publish and install helpers
 ```
 
 `core/` must stay C89 (`make ansi-check`); each overlay adds a platform layer.
@@ -253,5 +254,5 @@ See [`overlay/README.md`](overlay/README.md).
 
 ```sh
 make release
-sh publish-github.sh
+sh scripts/publish-github.sh
 ```

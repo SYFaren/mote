@@ -1,4 +1,3 @@
-/* mote overlay/win32 */
 #include "platform.h"
 #include "common.h"
 #include "utf8.h"
@@ -26,7 +25,7 @@ struct Plat {
   mote_bool quit;
   mote_bool focused;
   mote_bool caret_on;
-  mote_bool caret_shown; /* our ShowCaret/HideCaret nest tracking */
+  mote_bool caret_shown; /* ShowCaret/HideCaret nesting count */
   mote_bool font_owned;
   int caret_h;
   int wheel_acc;
@@ -35,7 +34,7 @@ struct Plat {
   size_t clip_len;
   PlatEvent queue[QN];
   int qh, qt;
-  /* brush cache — avoid CreateSolidBrush per glyph highlight */
+  /* brush cache, so highlighted glyphs don't each create a brush */
   mote_u32 br_rgb[24];
   HBRUSH br_h[24];
   int br_n;
@@ -72,7 +71,7 @@ static void remake_dib(Plat *p) {
 
 static mote_bool key_down(int vk) { return (GetKeyState(vk) & 0x8000) != 0; }
 
-/* Fixed-pitch font with Cyrillic coverage (stock SYSTEM_FIXED often lacks it). */
+/* A monospace font with Cyrillic; the stock SYSTEM_FIXED often has none. */
 static HFONT make_font(int px) {
   HFONT f = CreateFontW(-px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
@@ -238,7 +237,7 @@ Plat *plat_create(const char *title, int w, int h) {
   Plat *p = (Plat *)calloc(1, sizeof(Plat));
   if (!p) return NULL;
   {
-    /* Vista+; resolved at runtime so the exe still loads on XP. */
+    /* Vista and later; looked up at runtime so the exe still starts on XP. */
     typedef BOOL(WINAPI * DpiAwareFn)(void);
     DpiAwareFn dpi_aware = (DpiAwareFn)(void (*)(void))GetProcAddress(
         GetModuleHandleW(L"user32.dll"), "SetProcessDPIAware");
@@ -344,7 +343,7 @@ void plat_set_font_px(Plat *p, int px) {
   GetTextMetricsW(p->hdc_mem, &tm);
   p->fw = tm.tmAveCharWidth;
   p->fh = tm.tmHeight;
-  /* Force caret recreate after font change (zoom). */
+  /* The caret is recreated after a zoom. */
   p->caret_h = -1;
 }
 
@@ -405,7 +404,7 @@ void plat_draw_text(Plat *p, int x, int y, const char *s, int n, mote_u32 rgb) {
   SetBkMode(p->hdc_mem, TRANSPARENT);
   SetTextColor(p->hdc_mem,
                RGB((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255));
-  /* Fast path: single BMP codepoint (editor draws per glyph). */
+  /* Shortcut for one BMP character, which is how the editor draws. */
   len = utf8_decode(s, (size_t)n, &cp);
   if (len == n && cp <= 0xFFFFu) {
     wchar_t one = (wchar_t)cp;
@@ -468,7 +467,7 @@ mote_bool plat_set_caret(Plat *p, int x, int y, int h, mote_bool on) {
     HideCaret(p->hwnd);
     p->caret_shown = MOTE_FALSE;
   }
-  return MOTE_TRUE; /* OS caret — skip software draw */
+  return MOTE_TRUE; /* Windows draws the caret */
 }
 
 mote_bool plat_clipboard_set(Plat *p, const char *s, size_t n) {
@@ -530,7 +529,7 @@ char *plat_clipboard_get(Plat *p, size_t *out_len) {
     CloseClipboard();
     return out;
   }
-  /* fallback ANSI (old apps) */
+  /* ANSI text from old programs */
   h = GetClipboardData(CF_TEXT);
   if (!h) {
     CloseClipboard();
