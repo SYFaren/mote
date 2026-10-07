@@ -761,7 +761,7 @@ static mote_bool match_at(Editor *e, Doc *d, size_t i, size_t *out_len) {
   size_t flen;
   if (!e->find[0]) return MOTE_FALSE;
   if (e->find_regex) {
-    flen = re_match_buf(&d->buf, i, e->find, e->find_case);
+    flen = re_match_buf(&d->buf, i, e->find, !e->find_case);
     if (!flen) return MOTE_FALSE;
   } else {
     flen = strlen(e->find);

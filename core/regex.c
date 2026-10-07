@@ -1,17 +1,16 @@
-/* mote core — compact backtracking regex (. * + ? ^ $ [] \d \w \s) */
+/* mote core — compact backtracking regex (. * + ? ^ $ [] \d \w \s);
+   ^ and $ match at line boundaries. */
 #include "regex.h"
 #include <ctype.h>
 
 #define RE_MAX_STEPS 50000
 
-static char buf_c(const Buf *b, size_t i) { return buf_at(b, i); }
+static char lower(char c) { return (char)MOTE_LOWER(c); }
+static char upper(char c) { return (char)MOTE_UPPER(c); }
+static int in_range(char c, char a, char b) { return c >= a && c <= b; }
 
 static int ci_eq(mote_bool ci, char a, char b) {
-  if (ci) {
-    if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
-    if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
-  }
-  return a == b;
+  return ci ? lower(a) == lower(b) : a == b;
 }
 
 static const char *pat_skip(const char *pat) {
@@ -45,12 +44,9 @@ static int re_class(const char **pp, char c, mote_bool ci) {
   }
   while (*p && *p != ']') {
     if (p[1] == '-' && p[2] && p[2] != ']') {
-      char a = *p, b = p[2];
-      if (ci) {
-        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
-        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
-      }
-      if (c >= a && c <= b) ok = 1;
+      char a = p[0], b = p[2];
+      if (in_range(c, a, b) || (ci && (in_range(lower(c), a, b) || in_range(upper(c), a, b))))
+        ok = 1;
       p += 3;
     } else {
       if (ci_eq(ci, *p, c)) ok = 1;
@@ -67,7 +63,7 @@ static size_t re_atom(const Buf *b, size_t pos, size_t end, const char *pat,
   if (!*pat) return pos;
   if (pos >= end) return end + 1;
   if (*pat == '\\') {
-    char c = buf_c(b, pos);
+    char c = buf_at(b, pos);
     pat++;
     if (!*pat) return end + 1;
     if (*pat == 'd') {
@@ -94,16 +90,16 @@ static size_t re_atom(const Buf *b, size_t pos, size_t end, const char *pat,
     return pos + 1;
   }
   if (*pat == '.') {
-    if (buf_c(b, pos) == '\n') return end + 1;
+    if (buf_at(b, pos) == '\n') return end + 1;
     return pos + 1;
   }
   if (*pat == '[') {
     const char *p = pat + 1;
-    char c = buf_c(b, pos);
+    char c = buf_at(b, pos);
     if (!re_class(&p, c, ci)) return end + 1;
     return pos + 1;
   }
-  if (!ci_eq(ci, *pat, buf_c(b, pos))) return end + 1;
+  if (!ci_eq(ci, *pat, buf_at(b, pos))) return end + 1;
   return pos + 1;
 }
 
@@ -154,7 +150,8 @@ static size_t re_seq(const Buf *b, size_t pos, size_t end, const char *pat,
   size_t t;
   while (*pat) {
     if (++(*steps) > RE_MAX_STEPS) return end + 1;
-    if (*pat == '$' && !pat[1]) return pos == end ? pos : end + 1;
+    if (*pat == '$' && !pat[1])
+      return pos == end || buf_at(b, pos) == '\n' ? pos : end + 1;
     nxt = pat_skip(pat);
     if (*nxt == '*') return re_repeat(b, pos, end, pat, '*', ci, steps);
     if (*nxt == '+') return re_repeat(b, pos, end, pat, '+', ci, steps);
@@ -174,8 +171,8 @@ size_t re_match_buf(const Buf *b, size_t pos, const char *pat, mote_bool caseles
   end = buf_len(b);
   if (pos > end) return 0;
   if (*pat == '^') {
-    hit = re_seq(b, pos, end, pat + 1, caseless, &steps);
-    return (hit > pos && hit <= end) ? hit - pos : 0;
+    if (pos > 0 && buf_at(b, pos - 1) != '\n') return 0; /* line start only */
+    pat++;
   }
   hit = re_seq(b, pos, end, pat, caseless, &steps);
   return (hit > pos && hit <= end) ? hit - pos : 0;

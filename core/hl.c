@@ -1,5 +1,6 @@
 /* mote core — hl.c (packed pool + offset HLDB, runtime views) */
 #include "hl.h"
+#include "common.h"
 #include <ctype.h>
 #include <string.h>
 
@@ -8,6 +9,8 @@
 #define F_HASH_SL 4u
 #define F_MARKUP 8u
 #define F_MD 16u
+#define F_HASH_ANY 32u /* '#' starts a comment even mid-word (php) */
+#define F_TRIPLE 64u   /* """triple-quoted""" strings (python) */
 #define HNONE 0xFFFFu
 
 struct HlSyntax {
@@ -98,14 +101,14 @@ static const char HPOOL[] =
 
 static const HlDef HLDEF[] = {
     {21, 27, 62, 0, 3, 6, 3u},
-    {550, 557, 572, 65535, 65535, 65535, 7u},
+    {550, 557, 572, 65535, 65535, 65535, 71u},
     {832, 838, 867, 0, 3, 6, 3u},
     {1310, 1313, 1318, 0, 3, 6, 3u},
     {1654, 1659, 1664, 0, 3, 6, 3u},
     {1989, 1994, 2001, 0, 3, 6, 3u},
     {2428, 2434, 2455, 65535, 65535, 65535, 7u},
     {2642, 2646, 2652, 9, 3, 6, 3u},
-    {3081, 3085, 3098, 0, 3, 6, 7u},
+    {3081, 3085, 3098, 0, 3, 6, 39u},
     {3630, 3635, 65535, 65535, 65535, 65535, 3u},
     {3649, 3658, 65535, 65535, 12, 17, 9u},
     {3699, 3703, 3715, 65535, 3, 6, 3u},
@@ -179,15 +182,9 @@ static int starts_with(const char *s, size_t len, size_t i, const char *p) {
   return memcmp(s + i, p, n) == 0;
 }
 
-static int ascii_tolower(int c) {
-  if (c >= 'A' && c <= 'Z') return c - 'A' + 'a';
-  return c;
-}
-
 static int str_eq_ci(const char *a, const char *b) {
   while (*a && *b) {
-    if (ascii_tolower((unsigned char)*a) != ascii_tolower((unsigned char)*b))
-      return 0;
+    if (MOTE_LOWER(*a) != MOTE_LOWER(*b)) return 0;
     a++;
     b++;
   }
@@ -234,260 +231,214 @@ HlKind hl_kind_at(const HlSpan *spans, int nspans, size_t off) {
   return HL_NORMAL;
 }
 
+/* End of a block comment scanned from i; clears *in_ml if it closes here. */
+static size_t ml_end(const HlSyntax *syn, const char *line, size_t len, size_t i,
+                     int *in_ml) {
+  for (; i < len; i++)
+    if (starts_with(line, len, i, syn->mle)) {
+      *in_ml = 0;
+      return i + strlen(syn->mle);
+    }
+  return len;
+}
+
+/* Quoted string starting at i (quote char line[i]); triple allows """...""". */
+static size_t scan_string(const char *line, size_t len, size_t i, int triple) {
+  char q = line[i];
+  size_t j = i + 1;
+  if (triple && i + 2 < len && line[i + 1] == q && line[i + 2] == q) {
+    for (j = i + 3; j < len; j++)
+      if (j + 2 < len && line[j] == q && line[j + 1] == q && line[j + 2] == q)
+        return j + 3;
+    return len;
+  }
+  while (j < len) {
+    if (line[j] == '\\' && j + 1 < len) j += 2;
+    else if (line[j++] == q) break;
+  }
+  return j;
+}
+
+/* <tag attr="value">: tag parts as keywords, attribute values as strings. */
+static size_t scan_tag(const char *line, size_t len, size_t i, HlSpan *out,
+                       int max, int *n) {
+  size_t j = i + 1;
+  if (j < len && line[j] == '/') j++;
+  while (j < len && line[j] != '>' && line[j] != ' ' && line[j] != '\t') j++;
+  while (j < len && line[j] != '>') {
+    if (line[j] == '"' || line[j] == '\'') {
+      *n = push_span(out, *n, max, i, j, HL_KEYWORD);
+      i = j;
+      j = scan_string(line, len, j, 0);
+      *n = push_span(out, *n, max, i, j, HL_STRING);
+      i = j;
+      continue;
+    }
+    j++;
+  }
+  if (j < len) j++;
+  *n = push_span(out, *n, max, i, j, HL_KEYWORD);
+  return j;
+}
+
+/* #directive, plus the "file" / <file> operand of #include. */
+static size_t scan_preproc(const char *line, size_t len, size_t i, HlSpan *out,
+                           int max, int *n) {
+  size_t j = i + 1;
+  while (j < len && !is_sep((unsigned char)line[j])) j++;
+  *n = push_span(out, *n, max, i, j, HL_PREPROC);
+  if (j - (i + 1) == 7 && strncmp(line + i + 1, "include", 7) == 0) {
+    while (j < len && (line[j] == ' ' || line[j] == '\t')) j++;
+    if (j < len && (line[j] == '"' || line[j] == '<')) {
+      char close = line[j] == '"' ? '"' : '>';
+      size_t k = j + 1;
+      while (k < len && line[k] != close) k++;
+      if (k < len) k++;
+      *n = push_span(out, *n, max, j, k, HL_STRING);
+      j = k;
+    }
+  }
+  return j;
+}
+
+static int num_start(const char *line, size_t len, size_t i) {
+  int digit = isdigit((unsigned char)line[i]) ||
+              (line[i] == '.' && i + 1 < len && isdigit((unsigned char)line[i + 1]));
+  return digit && (i == 0 || is_sep((unsigned char)line[i - 1]));
+}
+
+static size_t skip_digits(const char *line, size_t len, size_t j, int (*ok)(int)) {
+  while (j < len && (ok((unsigned char)line[j]) || line[j] == '_')) j++;
+  return j;
+}
+
+static int is_bin_digit(int c) { return c == '0' || c == '1'; }
+
+/* 0x.., 0b.., or decimal with optional fraction/exponent, then u/l/f suffixes. */
+static size_t scan_number(const char *line, size_t len, size_t i) {
+  size_t j = i;
+  char p = j + 1 < len ? line[j + 1] : 0;
+  if (line[j] == '0' && (p == 'x' || p == 'X')) {
+    j = skip_digits(line, len, j + 2, isxdigit);
+  } else if (line[j] == '0' && (p == 'b' || p == 'B')) {
+    j = skip_digits(line, len, j + 2, is_bin_digit);
+  } else {
+    j = skip_digits(line, len, j, isdigit);
+    if (j < len && line[j] == '.') j = skip_digits(line, len, j + 1, isdigit);
+    if (j < len && (line[j] == 'e' || line[j] == 'E')) {
+      size_t k = j + 1;
+      if (k < len && (line[k] == '+' || line[k] == '-')) k++;
+      if (k < len && isdigit((unsigned char)line[k])) j = skip_digits(line, len, k, isdigit);
+    }
+  }
+  while (j < len && strchr("uUlLfF", line[j])) j++;
+  return j;
+}
+
+/* Markdown constructs that cover the whole line; returns 1 if it did. */
+static int md_whole_line(const char *line, size_t len, HlSpan *out, int max, int *n) {
+  size_t k = 0;
+  while (k < len && line[k] == '#') k++;
+  if (k && (k == len || line[k] == ' ')) {
+    *n = push_span(out, *n, max, 0, len, HL_PREPROC);
+    return 1;
+  }
+  if (len >= 2 && line[0] == '>' && line[1] == ' ')
+    *n = push_span(out, *n, max, 0, 2, HL_COMMENT);
+  if (len >= 3 && (line[0] == '-' || line[0] == '*') && line[1] == line[0] &&
+      line[2] == line[0]) {
+    *n = push_span(out, *n, max, 0, len, HL_COMMENT);
+    return 1;
+  }
+  return 0;
+}
+
+/* **bold**, list bullets and [text](url) at i; returns i if none matched. */
+static size_t md_inline(const char *line, size_t len, size_t i, HlSpan *out,
+                        int max, int *n) {
+  char c = line[i];
+  size_t j, k;
+  if (c == '*' && i + 1 < len && line[i + 1] == '*') {
+    for (j = i + 2; j + 1 < len; j++)
+      if (line[j] == '*' && line[j + 1] == '*') {
+        *n = push_span(out, *n, max, i, j + 2, HL_KEYWORD);
+        return j + 2;
+      }
+  }
+  if ((c == '-' || c == '*' || c == '+') && (i == 0 || line[i - 1] == ' ') &&
+      i + 1 < len && line[i + 1] == ' ') {
+    *n = push_span(out, *n, max, i, i + 2, HL_TYPE);
+    return i + 2;
+  }
+  if (c == '[') {
+    for (j = i + 1; j < len && line[j] != ']'; j++) {}
+    if (j + 1 < len && line[j + 1] == '(') {
+      for (k = j + 2; k < len && line[k] != ')'; k++) {}
+      if (k < len) {
+        *n = push_span(out, *n, max, i, j + 2, HL_KEYWORD);
+        *n = push_span(out, *n, max, j + 2, k + 1, HL_STRING);
+        return k + 1;
+      }
+    }
+  }
+  return i;
+}
+
+static int is_bracket(char c) { return c && strchr("{}()[]", c) != NULL; }
+
+/* Spans for one line (no '\n'). in_ml: a block comment is open at line start. */
 int hl_line(const HlSyntax *syn, const char *line, size_t len, int in_ml,
             HlSpan *out, int max_out, int *out_ml) {
-  size_t i = 0;
-  int n = 0;
   unsigned flags = syn ? syn->flags : 0;
+  int md = (flags & F_MD) != 0;
+  int has_ml = syn && syn->mls && syn->mle;
+  size_t i = 0, j;
+  int n = 0;
 
   if (out_ml) *out_ml = in_ml;
   if (!line) return 0;
-
-  if (syn && (flags & F_MD) && len && line[0] == '#') {
-    size_t k = 0;
-    while (k < len && line[k] == '#') k++;
-    if (k && (k == len || line[k] == ' '))
-      return push_span(out, 0, max_out, 0, len, HL_PREPROC);
-  }
-
-  if (syn && (flags & F_MD) && len >= 2 && line[0] == '>' && line[1] == ' ')
-    n = push_span(out, n, max_out, 0, 2, HL_COMMENT);
-
-  if (syn && (flags & F_MD) && len >= 3 &&
-      ((line[0] == '-' && line[1] == '-' && line[2] == '-') ||
-       (line[0] == '*' && line[1] == '*' && line[2] == '*')))
-    return push_span(out, n, max_out, 0, len, HL_COMMENT);
+  if (md && md_whole_line(line, len, out, max_out, &n)) return n;
 
   while (i < len) {
-    if (syn && syn->mls && syn->mle && in_ml) {
-      size_t j = i;
-      size_t el = strlen(syn->mle);
-      while (j < len) {
-        if (starts_with(line, len, j, syn->mle)) {
-          j += el;
-          in_ml = 0;
-          break;
-        }
-        j++;
-      }
-      n = push_span(out, n, max_out, i, j, HL_COMMENT);
-      i = j;
-      continue;
-    }
-
-    if (syn && syn->mls && syn->mle && starts_with(line, len, i, syn->mls)) {
-      size_t j = i + strlen(syn->mls);
-      size_t el = strlen(syn->mle);
+    char c = line[i];
+    if (has_ml && (in_ml || starts_with(line, len, i, syn->mls))) {
+      j = in_ml ? i : i + strlen(syn->mls);
       in_ml = 1;
-      while (j < len) {
-        if (starts_with(line, len, j, syn->mle)) {
-          j += el;
-          in_ml = 0;
-          break;
-        }
-        j++;
-      }
+      j = ml_end(syn, line, len, j, &in_ml);
       n = push_span(out, n, max_out, i, j, HL_COMMENT);
       i = j;
-      continue;
-    }
-
-    if (syn && syn->sl && starts_with(line, len, i, syn->sl)) {
+    } else if ((syn && starts_with(line, len, i, syn->sl)) ||
+               ((flags & F_HASH_SL) && c == '#' &&
+                (i == 0 || is_sep((unsigned char)line[i - 1]) || (flags & F_HASH_ANY)))) {
       n = push_span(out, n, max_out, i, len, HL_COMMENT);
       break;
-    }
-    if ((flags & F_HASH_SL) && line[i] == '#' &&
-        (i == 0 || is_sep((unsigned char)line[i - 1]) ||
-         (syn && syn->name && strcmp(syn->name, "php") == 0))) {
-      n = push_span(out, n, max_out, i, len, HL_COMMENT);
-      break;
-    }
-
-    if ((flags & F_MARKUP) && line[i] == '<') {
-      size_t j = i + 1;
-      HlKind k = HL_KEYWORD;
-      if (j < len && line[j] == '/') j++;
-      while (j < len && line[j] != '>' && line[j] != ' ' && line[j] != '\t' &&
-             line[j] != '\n')
-        j++;
-      while (j < len && line[j] != '>') {
-        if (line[j] == '"' || line[j] == '\'') {
-          char q = line[j++];
-          n = push_span(out, n, max_out, i, j - 1, k);
-          i = j - 1;
-          while (j < len && line[j] != q) {
-            if (line[j] == '\\' && j + 1 < len) j += 2;
-            else j++;
-          }
-          if (j < len) j++;
-          n = push_span(out, n, max_out, i, j, HL_STRING);
-          i = j;
-          k = HL_KEYWORD;
-          continue;
-        }
-        j++;
-      }
-      if (j < len) j++;
-      n = push_span(out, n, max_out, i, j, HL_KEYWORD);
+    } else if ((flags & F_MARKUP) && c == '<') {
+      i = scan_tag(line, len, i, out, max_out, &n);
+    } else if (md && (j = md_inline(line, len, i, out, max_out, &n)) > i) {
       i = j;
-      continue;
-    }
-
-    if ((flags & F_MD) && i + 1 < len && line[i] == '*' && line[i + 1] == '*') {
-      size_t j = i + 2;
-      while (j + 1 < len) {
-        if (line[j] == '*' && line[j + 1] == '*') {
-          j += 2;
-          n = push_span(out, n, max_out, i, j, HL_KEYWORD);
-          i = j;
-          continue;
-        }
-        j++;
-      }
-    }
-
-    if ((flags & F_MD) && len - i >= 2 &&
-        (line[i] == '-' || line[i] == '*' || line[i] == '+') &&
-        (i == 0 || line[i - 1] == ' ') && line[i + 1] == ' ') {
-      n = push_span(out, n, max_out, i, i + 2, HL_TYPE);
-      i += 2;
-      continue;
-    }
-
-    if ((flags & F_MD) && i + 1 < len && line[i] == '[') {
-      size_t j = i + 1;
-      while (j < len && line[j] != ']' && line[j] != '\n') j++;
-      if (j < len && j + 1 < len && line[j + 1] == '(') {
-        size_t k = j + 2;
-        n = push_span(out, n, max_out, i, j + 2, HL_KEYWORD);
-        while (k < len && line[k] != ')' && line[k] != '\n') k++;
-        if (k < len) {
-          n = push_span(out, n, max_out, j + 2, k + 1, HL_STRING);
-          i = k + 1;
-          continue;
-        }
-      }
-    }
-
-    if ((flags & F_STR) && (line[i] == '"' || line[i] == '\'' ||
-                            ((flags & F_MD) && line[i] == '`'))) {
-      char q = line[i];
-      size_t j = i + 1;
-      int trip = 0;
-      if (syn && syn->name && strcmp(syn->name, "python") == 0 &&
-          i + 2 < len && line[i + 1] == q && line[i + 2] == q) {
-        trip = 1;
-        j = i + 3;
-      }
-      while (j < len) {
-        if (!trip && line[j] == '\\' && j + 1 < len) {
-          j += 2;
-          continue;
-        }
-        if (trip && j + 2 < len && line[j] == q && line[j + 1] == q &&
-            line[j + 2] == q) {
-          j += 3;
-          break;
-        }
-        if (!trip && line[j] == q) {
-          j++;
-          break;
-        }
-        j++;
-      }
+    } else if ((flags & F_STR) && (c == '"' || c == '\'' || (md && c == '`'))) {
+      j = scan_string(line, len, i, (flags & F_TRIPLE) != 0);
       n = push_span(out, n, max_out, i, j, HL_STRING);
       i = j;
-      continue;
-    }
-
-    if (line[i] == '#' && syn && !(flags & F_HASH_SL) && !(flags & F_MARKUP) &&
-        !(flags & F_MD)) {
-      size_t j = i + 1;
-      size_t kw_end;
-      while (j < len && (isalnum((unsigned char)line[j]) || line[j] == '_')) j++;
-      kw_end = j;
-      n = push_span(out, n, max_out, i, kw_end, HL_PREPROC);
-      /* #include "..." / <...> */
-      if (kw_end - (i + 1) == 7 && strncmp(line + i + 1, "include", 7) == 0) {
-        while (j < len && (line[j] == ' ' || line[j] == '\t')) j++;
-        if (j < len && (line[j] == '"' || line[j] == '<')) {
-          char open = line[j], close = (open == '"') ? '"' : '>';
-          size_t k = j + 1;
-          while (k < len && line[k] != close && line[k] != '\n') k++;
-          if (k < len) k++;
-          n = push_span(out, n, max_out, j, k, HL_STRING);
-          j = k;
-        }
-      }
-      i = j;
-      continue;
-    }
-
-    if ((flags & F_NUM) &&
-        ((isdigit((unsigned char)line[i]) &&
-          (i == 0 || is_sep((unsigned char)line[i - 1]))) ||
-         (line[i] == '.' && i + 1 < len && isdigit((unsigned char)line[i + 1]) &&
-          (i == 0 || is_sep((unsigned char)line[i - 1]))))) {
-      size_t j = i;
-      if (line[j] == '0' && j + 1 < len &&
-          (line[j + 1] == 'x' || line[j + 1] == 'X')) {
-        j += 2;
-        while (j < len && (isxdigit((unsigned char)line[j]) || line[j] == '_'))
-          j++;
-      } else if (line[j] == '0' && j + 1 < len &&
-                 (line[j + 1] == 'b' || line[j + 1] == 'B')) {
-        j += 2;
-        while (j < len && (line[j] == '0' || line[j] == '1' || line[j] == '_'))
-          j++;
-      } else {
-        while (j < len && (isdigit((unsigned char)line[j]) || line[j] == '_'))
-          j++;
-        if (j < len && line[j] == '.') {
-          j++;
-          while (j < len && (isdigit((unsigned char)line[j]) || line[j] == '_'))
-            j++;
-        }
-        if (j < len && (line[j] == 'e' || line[j] == 'E')) {
-          size_t k = j + 1;
-          if (k < len && (line[k] == '+' || line[k] == '-')) k++;
-          if (k < len && isdigit((unsigned char)line[k])) {
-            j = k + 1;
-            while (j < len &&
-                   (isdigit((unsigned char)line[j]) || line[j] == '_'))
-              j++;
-          }
-        }
-      }
-      while (j < len && (line[j] == 'u' || line[j] == 'U' || line[j] == 'l' ||
-                         line[j] == 'L' || line[j] == 'f' || line[j] == 'F'))
-        j++;
+    } else if (c == '#' && syn && !(flags & (F_HASH_SL | F_MARKUP | F_MD))) {
+      i = scan_preproc(line, len, i, out, max_out, &n);
+    } else if ((flags & F_NUM) && num_start(line, len, i)) {
+      j = scan_number(line, len, i);
       n = push_span(out, n, max_out, i, j, HL_NUMBER);
       i = j;
-      continue;
-    }
-
-    if (isalpha((unsigned char)line[i]) || line[i] == '_') {
-      size_t j = i + 1;
+    } else if (isalpha((unsigned char)c) || c == '_') {
       HlKind k = HL_NORMAL;
-      while (j < len && (isalnum((unsigned char)line[j]) || line[j] == '_'))
-        j++;
+      for (j = i + 1; j < len && !is_sep((unsigned char)line[j]); j++) {}
       if (syn && match_kw(syn->kws, line + i, j - i, &k))
         n = push_span(out, n, max_out, i, j, k);
       i = j;
-      continue;
+    } else if ((flags & F_STR) && is_bracket(c)) {
+      /* operators stay uncoloured; only brackets get a span */
+      n = push_span(out, n, max_out, i, i + 1, HL_BRACKET);
+      i++;
+    } else {
+      i++;
     }
-
-    /* Brackets only — operators stay normal (preproc-purple ops looked broken). */
-    if (syn && (flags & F_STR)) {
-      char c = line[i];
-      if (c == '{' || c == '}' || c == '(' || c == ')' || c == '[' || c == ']') {
-        n = push_span(out, n, max_out, i, i + 1, HL_BRACKET);
-        i++;
-        continue;
-      }
-    }
-
-    i++;
   }
 
   if (out_ml) *out_ml = in_ml;

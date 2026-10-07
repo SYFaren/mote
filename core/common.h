@@ -13,4 +13,8 @@
 #define MOTE_MAX_FILE (64u * 1024u * 1024u)
 #endif
 
+/* ASCII-only case folding; UTF-8 bytes pass through unchanged. */
+#define MOTE_LOWER(c) ((c) >= 'A' && (c) <= 'Z' ? (c) - 'A' + 'a' : (c))
+#define MOTE_UPPER(c) ((c) >= 'a' && (c) <= 'z' ? (c) - 'a' + 'A' : (c))
+
 #endif

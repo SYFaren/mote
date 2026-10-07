@@ -4,12 +4,22 @@
 #include "utf8.h"
 #include "undo.h"
 #include "hl.h"
+#include "regex.h"
+#include "mote_snprintf.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
 
 static int fail;
+
+static Buf rb;
+
+static size_t re(const char *text, size_t pos, const char *pat, mote_bool ci) {
+  buf_free(&rb);
+  if (!buf_init(&rb, 0) || !buf_insert(&rb, 0, text, strlen(text))) return 0;
+  return re_match_buf(&rb, pos, pat, ci);
+}
 
 #define CHECK(cond)                                                            \
   do {                                                                         \
@@ -28,6 +38,9 @@ int main(void) {
   mote_u32 cp;
   char enc[4];
   const HlSyntax *syn;
+  HlSpan sp[HL_MAX_SPANS];
+  char fb[8];
+  int ml, ns;
 
   CHECK(sizeof(mote_u32) == 4);
   CHECK(sizeof(mote_u16) == 2);
@@ -89,6 +102,34 @@ int main(void) {
   syn = hl_select("readme.txt");
   CHECK(syn == NULL);
 
+  /* regex: case flag, classes, line anchors */
+  CHECK(re("Hello", 0, "hel+o", MOTE_TRUE) == 5);
+  CHECK(re("Hello", 0, "hel+o", MOTE_FALSE) == 0);
+  CHECK(re("Hello", 0, "[a-h]ello", MOTE_TRUE) == 5);
+  CHECK(re("hello", 0, "[A-H]ello", MOTE_TRUE) == 5);
+  CHECK(re("hello", 0, "[A-H]ello", MOTE_FALSE) == 0);
+  CHECK(re("ab\ncd", 0, "ab$", MOTE_FALSE) == 2);
+  CHECK(re("ab\ncd", 3, "^cd", MOTE_FALSE) == 2);
+  CHECK(re("ab\ncd", 1, "^b", MOTE_FALSE) == 0);
+  buf_free(&rb);
+
+  /* mote_snprintf: C99 return value (full length) and truncation */
+  CHECK(mote_snprintf(fb, sizeof fb, "%d|%s", -42, "abc") == 7);
+  CHECK(strcmp(fb, "-42|abc") == 0);
+  CHECK(mote_snprintf(fb, sizeof fb, "%s", "0123456789") == 10);
+  CHECK(strcmp(fb, "0123456") == 0);
+  CHECK(mote_snprintf(fb, sizeof fb, "%04x%-3u|", 0xabu, 7u) == 8);
+  CHECK(strcmp(fb, "00ab7  ") == 0);
+  CHECK(mote_snprintf(fb, sizeof fb, "%.*s%c", 2, "xyz", '!') == 3);
+  CHECK(strcmp(fb, "xy!") == 0);
+  CHECK(mote_snprintf(fb, sizeof fb, "%05d", -7) == 5 && strcmp(fb, "-0007") == 0);
+
+  /* markdown: two bold runs on one line, nothing highlighted between them */
+  syn = hl_select("x.md");
+  ns = hl_line(syn, "**a** b **c**", 13, 0, sp, HL_MAX_SPANS, &ml);
+  CHECK(ns == 2 && sp[0].start == 0 && sp[0].len == 5 && sp[1].start == 8 &&
+        sp[1].len == 5);
+
   fd = mkstemp(tmp);
   CHECK(fd >= 0);
   if (fd >= 0) {
@@ -103,6 +144,13 @@ int main(void) {
     s = buf_strdup(&b);
     CHECK(s && strcmp(s, "elX.Xlo!Z") == 0);
     free(s);
+    /* a real U+FFFD is valid UTF-8 and must not trigger CP1251 conversion */
+    buf_free(&b);
+    CHECK(buf_init(&b, 0) && buf_insert(&b, 0, "\xEF\xBF\xBD", 3));
+    CHECK(buf_save(&b, tmp));
+    buf_free(&b);
+    CHECK(buf_init(&b, 0) && buf_load(&b, tmp));
+    CHECK(buf_len(&b) == 3 && buf_at(&b, 0) == '\xEF');
     unlink(tmp);
   }
 

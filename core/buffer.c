@@ -102,13 +102,9 @@ static mote_bool buf_match_ex(const Buf *b, size_t pos, const char *s, size_t n,
   len = buf_len(b);
   if (pos + n > len) return MOTE_FALSE;
   for (i = 0; i < n; i++) {
-    unsigned char a = (unsigned char)buf_at(b, pos + i);
-    unsigned char c = (unsigned char)s[i];
-    if (ci) {
-      if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + 32);
-      if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
-    }
-    if (a != c) return MOTE_FALSE;
+    int a = (unsigned char)buf_at(b, pos + i);
+    int c = (unsigned char)s[i];
+    if (ci ? MOTE_LOWER(a) != MOTE_LOWER(c) : a != c) return MOTE_FALSE;
   }
   return MOTE_TRUE;
 }
@@ -185,12 +181,13 @@ static mote_u32 cp1251_u(unsigned char c) {
   return map_80_bf[c - 0x80];
 }
 
+/* utf8_decode reports bad bytes as U+FFFD; a real U+FFFD is 3 bytes long. */
 static int bytes_are_utf8(const char *s, size_t n) {
   size_t i = 0;
   while (i < n) {
     mote_u32 cp;
     int len = utf8_decode(s + i, n - i, &cp);
-    if (len <= 0 || cp == 0xFFFDu) return 0;
+    if (len <= 0 || (cp == 0xFFFDu && len != 3)) return 0;
     i += (size_t)len;
   }
   return 1;
@@ -228,7 +225,7 @@ static mote_bool ensure_utf8_text(Buf *b) {
     out_n += (size_t)un;
   }
   buf_free(b);
-  if (!buf_init(b, out_n)) {
+  if (out_n > MOTE_MAX_FILE || !buf_init(b, out_n)) {
     free(tmp);
     return MOTE_FALSE;
   }
@@ -331,14 +328,17 @@ mote_bool buf_save(const Buf *b, const char *path) {
     return MOTE_FALSE;
   }
 #if defined(__DJGPP__) || defined(__MSDOS__) || defined(MSDOS)
-  /* FAT rename does not replace an existing name. */
+  /* FAT rename does not replace an existing name. Once the original is
+     gone the temp file is the only copy, so it is kept if rename fails. */
   (void)plat_remove(path);
-#endif
+  return plat_rename(tmp, path) == 0;
+#else
   if (plat_rename(tmp, path) != 0) {
     plat_remove(tmp);
     return MOTE_FALSE;
   }
   return MOTE_TRUE;
+#endif
 }
 
 void buf_seek(Buf *b, size_t pos) {
