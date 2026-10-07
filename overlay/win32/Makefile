@@ -5,11 +5,11 @@ ROOT := ../..
 include ../build.mk
 
 include ../core.mk
-OV = main.c win32.c os.c
+OV = main.c win32.c os.c winutil.c
 SRC = $(CORE) $(OV)
 
-INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat
-CFLAGS = -std=c99 -Wall -Wextra $(INCLUDES) $(MOTE_OPT) -D_WIN32 -mwindows
+INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat -I$(ROOT)/overlay/win32
+CFLAGS = -std=c99 -Wall -Wextra $(INCLUDES) $(MOTE_OPT) -D_WIN32 -municode -mwindows
 # PE/MinGW: no ELF -z flags; strip + GC + LTO only
 LDFLAGS = -static -static-libgcc -Oz -flto \
 	-Wl,--gc-sections,--as-needed,-s,--strip-all,--exclude-libs,ALL \

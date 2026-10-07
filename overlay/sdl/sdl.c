@@ -1,7 +1,8 @@
 /* mote overlay/sdl — SDL2 (default) or SDL3 (-DMOTE_SDL3) */
 #include "platform.h"
+#include "keymap.h"
 #include "soft.h"
-#include "soft_keys.h"
+#include "../evq.h"
 
 #if defined(MOTE_SDL3)
 #include <SDL3/SDL.h>
@@ -24,6 +25,30 @@
 #define MOTE_SDL_RENDERER 1
 #endif
 
+/* SDL3 names for SDL2, so one code path serves both. SDL3 calls return bool
+   (true = ok) where SDL2 returned int (0 = ok); SDL_OK hides that. */
+#if defined(MOTE_SDL3)
+#define SDL_OK(r) (r)
+#define KEY_SYM(ke) ((ke)->key)
+#define KEY_SCAN(ke) ((ke)->scancode)
+#define KEY_MOD(ke) ((ke)->mod)
+#else
+#define SDL_OK(r) ((r) == 0)
+#define KEY_SYM(ke) ((ke)->keysym.sym)
+#define KEY_SCAN(ke) ((ke)->keysym.scancode)
+#define KEY_MOD(ke) ((ke)->keysym.mod)
+#define SDL_KMOD_CTRL KMOD_CTRL
+#define SDL_KMOD_SHIFT KMOD_SHIFT
+#define SDL_KMOD_ALT KMOD_ALT
+#define SDL_EVENT_QUIT SDL_QUIT
+#define SDL_EVENT_KEY_DOWN SDL_KEYDOWN
+#define SDL_EVENT_TEXT_INPUT SDL_TEXTINPUT
+#define SDL_EVENT_MOUSE_BUTTON_DOWN SDL_MOUSEBUTTONDOWN
+#define SDL_EVENT_MOUSE_BUTTON_UP SDL_MOUSEBUTTONUP
+#define SDL_EVENT_MOUSE_MOTION SDL_MOUSEMOTION
+#define SDL_EVENT_MOUSE_WHEEL SDL_MOUSEWHEEL
+#endif
+
 struct Plat {
   SoftFb fb;
   SDL_Window *win;
@@ -31,94 +56,63 @@ struct Plat {
   SDL_Renderer *ren;
   SDL_Texture *tex;
 #endif
-  char *clip;
-  size_t clip_n;
-  PlatEvent q[128];
-  int qn;
+  EvQueue q;
   mote_bool quit;
 };
 
-static void qpush(Plat *p, PlatEvent *e) {
-  if (p->qn < (int)(sizeof p->q / sizeof p->q[0])) p->q[p->qn++] = *e;
-}
-
-static mote_bool qpop(Plat *p, PlatEvent *e) {
-  if (p->qn <= 0) return MOTE_FALSE;
-  *e = p->q[0];
-  p->qn--;
-  memmove(p->q, p->q + 1, (size_t)p->qn * sizeof p->q[0]);
-  return MOTE_TRUE;
-}
-
-static void key_nav(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
-  PlatEvent e;
-  memset(&e, 0, sizeof e);
-  e.type = PE_KEY;
-  e.key = k;
-  e.ctrl = ctrl;
-  e.shift = shift;
-  qpush(p, &e);
-}
-
-#if defined(MOTE_SDL3)
-static void map_key(Plat *p, const SDL_KeyboardEvent *ke) {
-  mote_bool ctrl = (ke->mod & SDL_KMOD_CTRL) != 0;
-  mote_bool shift = (ke->mod & SDL_KMOD_SHIFT) != 0;
-  mote_bool alt = (ke->mod & SDL_KMOD_ALT) != 0;
-  SDL_Keycode k = ke->key;
-#else
-static void map_key(Plat *p, const SDL_KeyboardEvent *ke) {
-  mote_bool ctrl = (ke->keysym.mod & KMOD_CTRL) != 0;
-  mote_bool shift = (ke->keysym.mod & KMOD_SHIFT) != 0;
-  mote_bool alt = (ke->keysym.mod & KMOD_ALT) != 0;
-  SDL_Keycode k = ke->keysym.sym;
-#endif
-  PlatKey pk = PK_NONE;
-  if (ctrl || alt) {
-    if (k >= SDLK_a && k <= SDLK_z) {
-      pk = soft_ctrl_letter((int)('A' + (k - SDLK_a)), shift, alt);
-      if (pk != PK_NONE) { key_nav(p, pk, ctrl, shift); return; }
-    }
-    if (k == SDLK_EQUALS || k == SDLK_PLUS) { key_nav(p, PK_ZOOMIN, 1, shift); return; }
-    if (k == SDLK_MINUS) { key_nav(p, PK_ZOOMOUT, 1, shift); return; }
-    if (k == SDLK_0) { key_nav(p, PK_ZOOMRESET, 1, shift); return; }
-    if (k == SDLK_RIGHTBRACKET) { key_nav(p, PK_BRACKET, 1, shift); return; }
-    if (k == SDLK_SLASH) { key_nav(p, PK_COMMENT, 1, shift); return; }
-    if (k == SDLK_TAB) {
-      key_nav(p, shift ? PK_PREVDOC : PK_NEXTDOC, 1, shift);
-      return;
-    }
-  }
+/* ASCII of a key for the shared keymap. Printable SDL keycodes are their
+   ASCII; on non-Latin layouts fall back to the letter's scancode. */
+static int key_char(SDL_Keycode k, SDL_Scancode sc) {
   switch (k) {
-  case SDLK_LEFT: pk = PK_LEFT; break;
-  case SDLK_RIGHT: pk = PK_RIGHT; break;
-  case SDLK_UP: pk = PK_UP; break;
-  case SDLK_DOWN: pk = PK_DOWN; break;
-  case SDLK_HOME: pk = PK_HOME; break;
-  case SDLK_END: pk = PK_END; break;
-  case SDLK_PAGEUP: pk = PK_PGUP; break;
-  case SDLK_PAGEDOWN: pk = PK_PGDN; break;
-  case SDLK_BACKSPACE: pk = PK_BACKSPACE; break;
-  case SDLK_DELETE: pk = PK_DELETE; break;
-  case SDLK_RETURN:
-  case SDLK_KP_ENTER:
-    if (ctrl && shift) pk = PK_BOOKMARK_SET;
-    else if (ctrl) pk = PK_BOOKMARK;
-    else pk = PK_ENTER;
-    break;
-  case SDLK_ESCAPE: pk = PK_ESCAPE; break;
-  case SDLK_TAB: pk = PK_TAB; break;
-  case SDLK_F1: pk = PK_F1; break;
-  case SDLK_F2: pk = shift ? PK_PREVDOC : PK_NEXTDOC; break;
-  case SDLK_F3: pk = shift ? PK_FINDPREV : PK_FINDNEXT; break;
-  case SDLK_F4: if (ctrl) pk = PK_CLOSEDOC; break;
-  case SDLK_F5: pk = PK_RELOAD; break;
-  case SDLK_F7: pk = PK_WS; break;
-  case SDLK_F8: pk = PK_BOOKMARK_SET; break;
-  case SDLK_F9: pk = PK_BOOKMARK; break;
+  case SDLK_KP_PLUS: return '+';
+  case SDLK_KP_MINUS: return '-';
+  case SDLK_KP_0: return '0';
+  case SDLK_KP_ENTER: return '\r';
   default: break;
   }
-  if (pk != PK_NONE) key_nav(p, pk, ctrl, shift);
+  if (k > 0 && k < 0x7f) return (int)k;
+  if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z) return 'a' + (int)(sc - SDL_SCANCODE_A);
+  return 0;
+}
+
+static void map_key(Plat *p, const SDL_KeyboardEvent *ke) {
+  mote_bool ctrl = (KEY_MOD(ke) & SDL_KMOD_CTRL) != 0;
+  mote_bool shift = (KEY_MOD(ke) & SDL_KMOD_SHIFT) != 0;
+  mote_bool alt = (KEY_MOD(ke) & SDL_KMOD_ALT) != 0;
+  SDL_Keycode k = KEY_SYM(ke);
+  int ch = key_char(k, KEY_SCAN(ke));
+  PlatKey pk = PK_NONE;
+  PlatEvent e;
+  if (alt && !ctrl && ch) pk = key_alt(ch);
+  else if (ctrl && ch) pk = key_ctrl(ch, shift);
+  if (pk == PK_NONE) {
+    switch (k) {
+    case SDLK_LEFT: pk = PK_LEFT; break;
+    case SDLK_RIGHT: pk = PK_RIGHT; break;
+    case SDLK_UP: pk = PK_UP; break;
+    case SDLK_DOWN: pk = PK_DOWN; break;
+    case SDLK_HOME: pk = PK_HOME; break;
+    case SDLK_END: pk = PK_END; break;
+    case SDLK_PAGEUP: pk = PK_PGUP; break;
+    case SDLK_PAGEDOWN: pk = PK_PGDN; break;
+    case SDLK_BACKSPACE: pk = PK_BACKSPACE; break;
+    case SDLK_DELETE: pk = PK_DELETE; break;
+    case SDLK_RETURN:
+    case SDLK_KP_ENTER: pk = PK_ENTER; break;
+    case SDLK_ESCAPE: pk = PK_ESCAPE; break;
+    case SDLK_TAB: pk = PK_TAB; break;
+    default:
+      if (k >= SDLK_F1 && k <= SDLK_F12) pk = key_fn((int)(k - SDLK_F1) + 1, ctrl, shift);
+      break;
+    }
+  }
+  if (pk == PK_NONE) return;
+  memset(&e, 0, sizeof e);
+  e.type = PE_KEY;
+  e.key = pk;
+  e.ctrl = ctrl;
+  e.shift = shift;
+  evq_push(&p->q, &e);
 }
 
 #ifdef MOTE_SDL_RENDERER
@@ -143,6 +137,15 @@ static mote_bool ensure_tex(Plat *p) {
 }
 #endif
 
+static void fb_resize(Plat *p, int w, int h) {
+  if (w < MOTE_MIN_WIN_W) w = MOTE_MIN_WIN_W;
+  if (h < MOTE_MIN_WIN_H) h = MOTE_MIN_WIN_H;
+  soft_resize(&p->fb, w, h);
+#ifdef MOTE_SDL_RENDERER
+  ensure_tex(p);
+#endif
+}
+
 /* Keep soft FB pixel-identical to the drawable — avoids fractional scale stripes. */
 static mote_bool sync_drawable_size(Plat *p) {
   int w = 0, h = 0;
@@ -161,13 +164,10 @@ static mote_bool sync_drawable_size(Plat *p) {
       SDL_GetWindowSize(p->win, &w, &h);
   }
 #endif
-  if (w < 200) w = 200;
-  if (h < 120) h = 120;
+  if (w < MOTE_MIN_WIN_W) w = MOTE_MIN_WIN_W;
+  if (h < MOTE_MIN_WIN_H) h = MOTE_MIN_WIN_H;
   if (w == p->fb.w && h == p->fb.h) return MOTE_FALSE;
-  soft_resize(&p->fb, w, h);
-#ifdef MOTE_SDL_RENDERER
-  ensure_tex(p);
-#endif
+  fb_resize(p, w, h);
   return MOTE_TRUE;
 }
 
@@ -184,62 +184,54 @@ static mote_bool sync_em_canvas(Plat *p) {
   }
   w = (int)css_w;
   h = (int)css_h;
-  if (w < 200) w = 200;
-  if (h < 120) h = 120;
+  if (w < MOTE_MIN_WIN_W) w = MOTE_MIN_WIN_W;
+  if (h < MOTE_MIN_WIN_H) h = MOTE_MIN_WIN_H;
   /* Do not touch the canvas / window when size is unchanged — calling
    * set_canvas_element_size every poll clears the bitmap and flickers. */
   if (w == p->fb.w && h == p->fb.h) return MOTE_FALSE;
   emscripten_set_canvas_element_size("#canvas", w, h);
-  soft_resize(&p->fb, w, h);
-  ensure_tex(p);
+  fb_resize(p, w, h);
   SDL_SetWindowSize(p->win, w, h);
   return MOTE_TRUE;
 }
 #endif
 
+static void fail_create(Plat *p) {
+#ifdef MOTE_SDL_RENDERER
+  if (p->ren) SDL_DestroyRenderer(p->ren);
+#endif
+  if (p->win) SDL_DestroyWindow(p->win);
+  SDL_Quit();
+  free(p);
+}
+
 Plat *plat_create(const char *title, int w, int h) {
   Plat *p = (Plat *)calloc(1, sizeof(Plat));
+  if (!title) title = "mote";
   if (!p) return NULL;
-#if !defined(MOTE_SDL3)
-  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0"); /* nearest */
-  SDL_SetHint(SDL_HINT_VIDEO_HIGHDPI_DISABLED, "1");
-#endif
 #if defined(MOTE_SDL3)
   if (!SDL_Init(SDL_INIT_VIDEO)) { free(p); return NULL; }
-  p->win = SDL_CreateWindow(title ? title : "mote", w, h, SDL_WINDOW_RESIZABLE);
-  if (!p->win) { SDL_Quit(); free(p); return NULL; }
-  p->ren = SDL_CreateRenderer(p->win, NULL);
-  if (!p->ren) {
-    SDL_DestroyWindow(p->win);
-    SDL_Quit();
-    free(p);
-    return NULL;
-  }
-#elif defined(MOTE_SDL_RENDERER)
+  p->win = SDL_CreateWindow(title, w, h, SDL_WINDOW_RESIZABLE);
+  if (p->win) p->ren = SDL_CreateRenderer(p->win, NULL);
+  if (!p->ren) { fail_create(p); return NULL; }
+#else
+  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0"); /* nearest */
+  SDL_SetHint(SDL_HINT_VIDEO_HIGHDPI_DISABLED, "1");
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) { free(p); return NULL; }
-  p->win = SDL_CreateWindow(title ? title : "mote", SDL_WINDOWPOS_CENTERED,
-                            SDL_WINDOWPOS_CENTERED, w, h, SDL_WINDOW_RESIZABLE);
-  if (!p->win) { SDL_Quit(); free(p); return NULL; }
+  p->win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h,
+                            SDL_WINDOW_RESIZABLE);
+  if (!p->win) { fail_create(p); return NULL; }
+#ifdef MOTE_SDL_RENDERER
   /* Prefer accelerated+vsync. SOFTWARE first was used historically and made
    * the Emscripten build crawl / flicker. */
   p->ren = SDL_CreateRenderer(p->win, -1,
                               SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-  if (!p->ren)
-    p->ren = SDL_CreateRenderer(p->win, -1, SDL_RENDERER_PRESENTVSYNC);
+  if (!p->ren) p->ren = SDL_CreateRenderer(p->win, -1, SDL_RENDERER_PRESENTVSYNC);
   if (!p->ren) p->ren = SDL_CreateRenderer(p->win, -1, 0);
-  if (!p->ren) {
-    SDL_DestroyWindow(p->win);
-    SDL_Quit();
-    free(p);
-    return NULL;
-  }
-#else
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) { free(p); return NULL; }
-  p->win = SDL_CreateWindow(title ? title : "mote", SDL_WINDOWPOS_CENTERED,
-                            SDL_WINDOWPOS_CENTERED, w, h, SDL_WINDOW_RESIZABLE);
-  if (!p->win) { SDL_Quit(); free(p); return NULL; }
+  if (!p->ren) { fail_create(p); return NULL; }
 #endif
-  soft_set_font_px(&p->fb, 16);
+#endif
+  soft_set_font_px(&p->fb, MOTE_FONT_PX);
   if (!soft_resize(&p->fb, w, h)) {
     plat_destroy(p);
     return NULL;
@@ -259,18 +251,12 @@ Plat *plat_create(const char *title, int w, int h) {
 #else
   SDL_StartTextInput();
 #endif
-  {
-    PlatEvent e;
-    memset(&e, 0, sizeof e);
-    e.type = PE_EXPOSE;
-    qpush(p, &e);
-  }
+  evq_type(&p->q, PE_EXPOSE);
   return p;
 }
 
 void plat_destroy(Plat *p) {
   if (!p) return;
-  free(p->clip);
 #ifdef MOTE_SDL_RENDERER
   if (p->tex) SDL_DestroyTexture(p->tex);
   if (p->ren) SDL_DestroyRenderer(p->ren);
@@ -282,169 +268,101 @@ void plat_destroy(Plat *p) {
 }
 
 void plat_wait(Plat *p) {
-  if (p->qn > 0) return;
+  if (p->q.n > 0) return;
 #ifdef __EMSCRIPTEN__
   /* Do not block forever: the first CSS layout often lands after the
    * initial ed_draw, and a blocking WaitEvent leaves a black canvas until
    * the user clicks. Timeout + sync pushes PE_EXPOSE when size settles. */
-  {
-    PlatEvent e;
-    if (sync_em_canvas(p)) {
-      memset(&e, 0, sizeof e);
-      e.type = PE_EXPOSE;
-      qpush(p, &e);
-      return;
-    }
-    SDL_WaitEventTimeout(NULL, 32);
-    if (sync_em_canvas(p)) {
-      memset(&e, 0, sizeof e);
-      e.type = PE_EXPOSE;
-      qpush(p, &e);
-    }
+  if (sync_em_canvas(p)) {
+    evq_type(&p->q, PE_EXPOSE);
+    return;
   }
+  SDL_WaitEventTimeout(NULL, 32);
+  if (sync_em_canvas(p)) evq_type(&p->q, PE_EXPOSE);
 #else
+  SDL_WaitEvent(NULL);
+#endif
+}
+
+/* Resize/expose window events; MOTE_TRUE if the editor must redraw. */
+static mote_bool window_event(Plat *p, const SDL_Event *se) {
 #if defined(MOTE_SDL3)
-  SDL_WaitEvent(NULL);
+  if (se->type == SDL_EVENT_WINDOW_RESIZED) {
+    fb_resize(p, se->window.data1, se->window.data2);
+    sync_drawable_size(p);
+    return MOTE_TRUE;
+  }
+  return se->type == SDL_EVENT_WINDOW_EXPOSED;
 #else
-  SDL_WaitEvent(NULL);
+  if (se->type != SDL_WINDOWEVENT) return MOTE_FALSE;
+#ifndef __EMSCRIPTEN__
+  /* Emscripten: size is owned by sync_em_canvas (CSS box); following SDL
+   * resize events too would loop SetWindowSize ↔ SIZE_CHANGED. */
+  if (se->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+    fb_resize(p, se->window.data1, se->window.data2);
+    sync_drawable_size(p);
+    return MOTE_TRUE;
+  }
 #endif
+  return se->window.event == SDL_WINDOWEVENT_EXPOSED;
 #endif
+}
+
+/* Translate one SDL event; MOTE_FALSE if it produced nothing. */
+static mote_bool translate(Plat *p, const SDL_Event *se, PlatEvent *ev) {
+  memset(ev, 0, sizeof *ev);
+  if (window_event(p, se)) {
+    ev->type = PE_EXPOSE;
+    return MOTE_TRUE;
+  }
+  switch (se->type) {
+  case SDL_EVENT_QUIT:
+    p->quit = MOTE_TRUE;
+    ev->type = PE_QUIT;
+    return MOTE_TRUE;
+  case SDL_EVENT_KEY_DOWN:
+    map_key(p, &se->key);
+    return evq_pop(&p->q, ev);
+  case SDL_EVENT_TEXT_INPUT: {
+    size_t n = strlen(se->text.text);
+    if (n > sizeof ev->text) n = sizeof ev->text;
+    ev->type = PE_TEXT;
+    memcpy(ev->text, se->text.text, n);
+    ev->text_len = (int)n;
+    return MOTE_TRUE;
+  }
+  case SDL_EVENT_MOUSE_BUTTON_DOWN:
+  case SDL_EVENT_MOUSE_BUTTON_UP:
+    ev->type = se->type == SDL_EVENT_MOUSE_BUTTON_DOWN ? PE_MOUSE_DOWN : PE_MOUSE_UP;
+    ev->mx = (int)se->button.x;
+    ev->my = (int)se->button.y;
+    return MOTE_TRUE;
+  case SDL_EVENT_MOUSE_MOTION:
+    ev->type = PE_MOUSE_MOVE;
+    ev->mx = (int)se->motion.x;
+    ev->my = (int)se->motion.y;
+    return MOTE_TRUE;
+  case SDL_EVENT_MOUSE_WHEEL:
+    ev->type = PE_SCROLL;
+    ev->wheel = (int)se->wheel.y;
+    return MOTE_TRUE;
+  default:
+    return MOTE_FALSE;
+  }
 }
 
 mote_bool plat_poll(Plat *p, PlatEvent *ev) {
   SDL_Event se;
+  memset(ev, 0, sizeof *ev);
 #ifdef __EMSCRIPTEN__
   if (sync_em_canvas(p)) {
-    memset(ev, 0, sizeof *ev);
     ev->type = PE_EXPOSE;
     return MOTE_TRUE;
   }
 #endif
-  if (qpop(p, ev)) return MOTE_TRUE;
-  while (SDL_PollEvent(&se)) {
-#if defined(MOTE_SDL3)
-    if (se.type == SDL_EVENT_QUIT) {
-      p->quit = MOTE_TRUE;
-      ev->type = PE_QUIT;
-      return MOTE_TRUE;
-    }
-    if (se.type == SDL_EVENT_WINDOW_RESIZED) {
-      soft_resize(&p->fb, se.window.data1, se.window.data2);
-#ifdef MOTE_SDL_RENDERER
-      ensure_tex(p);
-#endif
-      sync_drawable_size(p);
-      ev->type = PE_EXPOSE;
-      return MOTE_TRUE;
-    }
-    if (se.type == SDL_EVENT_WINDOW_EXPOSED) {
-      ev->type = PE_EXPOSE;
-      return MOTE_TRUE;
-    }
-    if (se.type == SDL_EVENT_KEY_DOWN) {
-      map_key(p, &se.key);
-      if (qpop(p, ev)) return MOTE_TRUE;
-    }
-    if (se.type == SDL_EVENT_TEXT_INPUT) {
-      PlatEvent te;
-      size_t n = strlen(se.text.text);
-      memset(&te, 0, sizeof te);
-      te.type = PE_TEXT;
-      if (n > sizeof te.text) n = sizeof te.text;
-      memcpy(te.text, se.text.text, n);
-      te.text_len = (int)n;
-      qpush(p, &te);
-      if (qpop(p, ev)) return MOTE_TRUE;
-    }
-    if (se.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
-        se.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-      memset(ev, 0, sizeof *ev);
-      ev->type = se.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? PE_MOUSE_DOWN
-                                                        : PE_MOUSE_UP;
-      ev->mx = (int)se.button.x;
-      ev->my = (int)se.button.y;
-      return MOTE_TRUE;
-    }
-    if (se.type == SDL_EVENT_MOUSE_MOTION) {
-      memset(ev, 0, sizeof *ev);
-      ev->type = PE_MOUSE_MOVE;
-      ev->mx = (int)se.motion.x;
-      ev->my = (int)se.motion.y;
-      return MOTE_TRUE;
-    }
-    if (se.type == SDL_EVENT_MOUSE_WHEEL) {
-      memset(ev, 0, sizeof *ev);
-      ev->type = PE_SCROLL;
-      ev->wheel = (int)se.wheel.y;
-      return MOTE_TRUE;
-    }
-#else
-    if (se.type == SDL_QUIT) {
-      p->quit = MOTE_TRUE;
-      ev->type = PE_QUIT;
-      return MOTE_TRUE;
-    }
-    if (se.type == SDL_WINDOWEVENT) {
-#ifdef __EMSCRIPTEN__
-      /* Size is owned by sync_em_canvas (CSS box). Ignoring SDL resize
-       * events avoids a SetWindowSize ↔ SIZE_CHANGED feedback loop. */
-      if (se.window.event == SDL_WINDOWEVENT_EXPOSED) {
-        ev->type = PE_EXPOSE;
-        return MOTE_TRUE;
-      }
-#else
-      if (se.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-        soft_resize(&p->fb, se.window.data1, se.window.data2);
-#ifdef MOTE_SDL_RENDERER
-        ensure_tex(p);
-#endif
-        sync_drawable_size(p);
-        ev->type = PE_EXPOSE;
-        return MOTE_TRUE;
-      }
-      if (se.window.event == SDL_WINDOWEVENT_EXPOSED) {
-        ev->type = PE_EXPOSE;
-        return MOTE_TRUE;
-      }
-#endif
-    }
-    if (se.type == SDL_KEYDOWN) {
-      map_key(p, &se.key);
-      if (qpop(p, ev)) return MOTE_TRUE;
-    }
-    if (se.type == SDL_TEXTINPUT) {
-      PlatEvent te;
-      size_t n = strlen(se.text.text);
-      memset(&te, 0, sizeof te);
-      te.type = PE_TEXT;
-      if (n > sizeof te.text) n = sizeof te.text;
-      memcpy(te.text, se.text.text, n);
-      te.text_len = (int)n;
-      qpush(p, &te);
-      if (qpop(p, ev)) return MOTE_TRUE;
-    }
-    if (se.type == SDL_MOUSEBUTTONDOWN || se.type == SDL_MOUSEBUTTONUP) {
-      memset(ev, 0, sizeof *ev);
-      ev->type = se.type == SDL_MOUSEBUTTONDOWN ? PE_MOUSE_DOWN : PE_MOUSE_UP;
-      ev->mx = se.button.x;
-      ev->my = se.button.y;
-      return MOTE_TRUE;
-    }
-    if (se.type == SDL_MOUSEMOTION) {
-      memset(ev, 0, sizeof *ev);
-      ev->type = PE_MOUSE_MOVE;
-      ev->mx = se.motion.x;
-      ev->my = se.motion.y;
-      return MOTE_TRUE;
-    }
-    if (se.type == SDL_MOUSEWHEEL) {
-      memset(ev, 0, sizeof *ev);
-      ev->type = PE_SCROLL;
-      ev->wheel = se.wheel.y;
-      return MOTE_TRUE;
-    }
-#endif
-  }
+  if (evq_pop(&p->q, ev)) return MOTE_TRUE;
+  while (SDL_PollEvent(&se))
+    if (translate(p, &se, ev)) return MOTE_TRUE;
   if (p->quit) {
     ev->type = PE_QUIT;
     return MOTE_TRUE;
@@ -468,91 +386,68 @@ void plat_fill_rect(Plat *p, int x, int y, int w, int h, mote_u32 rgb) {
 void plat_draw_text(Plat *p, int x, int y, const char *s, int n, mote_u32 rgb) {
   soft_draw_text(&p->fb, x, y, s, n, rgb);
 }
+
+#ifdef MOTE_SDL_RENDERER
+static void present(Plat *p) {
+  void *pixels;
+  int pitch, y, x;
+  if (!p->tex) return;
+  /* Lock + opaque alpha: Emscripten canvas treats A=0 as invisible, so a
+   * raw UpdateTexture of 0x00RRGGBB often shows a black page until redraw. */
+  if (SDL_OK(SDL_LockTexture(p->tex, NULL, &pixels, &pitch))) {
+    for (y = 0; y < p->fb.h; y++) {
+      const mote_u32 *src = p->fb.px + (size_t)y * (size_t)p->fb.w;
+      unsigned char *row = (unsigned char *)pixels + y * pitch;
+      for (x = 0; x < p->fb.w; x++) {
+        mote_u32 c = src[x] | 0xFF000000u;
+        memcpy(row + x * 4, &c, 4); /* pitch may leave rows unaligned */
+      }
+    }
+    SDL_UnlockTexture(p->tex);
+  }
+#if defined(MOTE_SDL3)
+  SDL_RenderTexture(p->ren, p->tex, NULL, NULL);
+#else
+  SDL_RenderCopy(p->ren, p->tex, NULL, NULL);
+#endif
+  SDL_RenderPresent(p->ren);
+}
+#else
+static void present(Plat *p) {
+  SDL_Surface *ws = SDL_GetWindowSurface(p->win);
+  int x, y, bpp;
+  if (!ws) return;
+  soft_dump_once(&p->fb);
+  if (SDL_LockSurface(ws) != 0) return;
+  bpp = ws->format->BytesPerPixel;
+  for (y = 0; y < p->fb.h && y < ws->h; y++) {
+    Uint8 *dst = (Uint8 *)ws->pixels + y * ws->pitch;
+    const mote_u32 *src = p->fb.px + (size_t)y * (size_t)p->fb.w;
+    for (x = 0; x < p->fb.w && x < ws->w; x++) {
+      mote_u32 c = src[x];
+      Uint32 pix = SDL_MapRGB(ws->format, (c >> 16) & 255, (c >> 8) & 255, c & 255);
+      if (bpp == 4) {
+        ((Uint32 *)dst)[x] = pix;
+      } else if (bpp == 3) {
+        dst[x * 3] = (Uint8)pix;
+        dst[x * 3 + 1] = (Uint8)(pix >> 8);
+        dst[x * 3 + 2] = (Uint8)(pix >> 16);
+      } else if (bpp == 2) {
+        ((Uint16 *)dst)[x] = (Uint16)pix;
+      }
+    }
+  }
+  SDL_UnlockSurface(ws);
+  SDL_UpdateWindowSurface(p->win);
+}
+#endif
+
 void plat_end_frame(Plat *p) {
   soft_blit_caret(&p->fb);
-  if (!p->fb.px) return;
-#ifdef MOTE_SDL_RENDERER
-  {
-    void *pixels;
-    int pitch;
-    if (!p->tex) return;
-    /* Lock + opaque alpha: Emscripten canvas treats A=0 as invisible, so a
-     * raw UpdateTexture of 0x00RRGGBB often shows a black page until redraw. */
-    if (SDL_LockTexture(p->tex, NULL, &pixels, &pitch) == 0) {
-      int y, x;
-      for (y = 0; y < p->fb.h; y++) {
-        mote_u32 *src = p->fb.px + (size_t)y * (size_t)p->fb.w;
-        mote_u32 *dst = (mote_u32 *)((unsigned char *)pixels + y * pitch);
-        if (pitch == p->fb.w * (int)sizeof(mote_u32)) {
-          for (x = 0; x < p->fb.w; x++) dst[x] = src[x] | 0xFF000000u;
-        } else {
-          for (x = 0; x < p->fb.w; x++) {
-            mote_u32 c = src[x] | 0xFF000000u;
-            memcpy((unsigned char *)pixels + y * pitch + x * 4, &c, 4);
-          }
-        }
-      }
-      SDL_UnlockTexture(p->tex);
-    }
-#if defined(MOTE_SDL3)
-    SDL_RenderTexture(p->ren, p->tex, NULL, NULL);
-#else
-    SDL_RenderCopy(p->ren, p->tex, NULL, NULL);
-#endif
-    SDL_RenderPresent(p->ren);
-  }
-#else
-  {
-    SDL_Surface *ws = SDL_GetWindowSurface(p->win);
-    int x, y;
-    static int dumped;
-    if (!ws) return;
-    /* Optional: MOTE_DUMP_FB=/path.ppm writes soft FB (for shots / debug). */
-    if (!dumped && getenv("MOTE_DUMP_FB")) {
-      FILE *f = fopen(getenv("MOTE_DUMP_FB"), "wb");
-      if (f) {
-        fprintf(f, "P6\n%d %d\n255\n", p->fb.w, p->fb.h);
-        for (y = 0; y < p->fb.h; y++)
-          for (x = 0; x < p->fb.w; x++) {
-            mote_u32 c = p->fb.px[(size_t)y * (size_t)p->fb.w + (size_t)x];
-            unsigned char rgb[3] = {(c >> 16) & 255, (c >> 8) & 255, c & 255};
-            fwrite(rgb, 1, 3, f);
-          }
-        fclose(f);
-      }
-      dumped = 1;
-    }
-    if (SDL_LockSurface(ws) == 0) {
-      int bpp = ws->format->BytesPerPixel;
-      for (y = 0; y < p->fb.h && y < ws->h; y++) {
-        Uint8 *dst = (Uint8 *)ws->pixels + y * ws->pitch;
-        mote_u32 *src = p->fb.px + (size_t)y * (size_t)p->fb.w;
-        for (x = 0; x < p->fb.w && x < ws->w; x++) {
-          mote_u32 c = src[x];
-          Uint32 pix = SDL_MapRGB(ws->format, (c >> 16) & 255, (c >> 8) & 255, c & 255);
-          if (bpp == 4)
-            ((Uint32 *)dst)[x] = pix;
-          else if (bpp == 3) {
-            Uint8 *d = dst + x * 3;
-            d[0] = (Uint8)(pix & 0xFF);
-            d[1] = (Uint8)((pix >> 8) & 0xFF);
-            d[2] = (Uint8)((pix >> 16) & 0xFF);
-          } else if (bpp == 2)
-            ((Uint16 *)dst)[x] = (Uint16)pix;
-        }
-      }
-      SDL_UnlockSurface(ws);
-    }
-    SDL_UpdateWindowSurface(p->win);
-  }
-#endif
+  if (p->fb.px) present(p);
 }
 void plat_set_title(Plat *p, const char *title) {
-#if defined(MOTE_SDL3)
   SDL_SetWindowTitle(p->win, title ? title : "mote");
-#else
-  SDL_SetWindowTitle(p->win, title ? title : "mote");
-#endif
 }
 mote_bool plat_set_caret(Plat *p, int x, int y, int h, mote_bool on) {
   p->fb.caret_x = x;
@@ -562,49 +457,23 @@ mote_bool plat_set_caret(Plat *p, int x, int y, int h, mote_bool on) {
   return MOTE_TRUE;
 }
 char *plat_clipboard_get(Plat *p, size_t *out_len) {
-  char *t;
-#if defined(MOTE_SDL3)
-  t = SDL_GetClipboardText();
-#else
-  t = SDL_GetClipboardText();
-#endif
-  if (!t) {
-    if (out_len) *out_len = 0;
-    return NULL;
-  }
-  {
-    size_t n = strlen(t);
-    char *c = (char *)malloc(n + 1);
-    if (!c) {
-      SDL_free(t);
-      if (out_len) *out_len = 0;
-      return NULL;
-    }
-    memcpy(c, t, n + 1);
-    SDL_free(t);
-    if (out_len) *out_len = n;
-    (void)p;
-    return c;
-  }
+  char *t = SDL_GetClipboardText(), *c = NULL;
+  size_t n = t ? strlen(t) : 0;
+  (void)p;
+  if (n) c = (char *)malloc(n + 1);
+  if (c) memcpy(c, t, n + 1);
+  if (t) SDL_free(t);
+  if (out_len) *out_len = c ? n : 0;
+  return c;
 }
 mote_bool plat_clipboard_set(Plat *p, const char *s, size_t n) {
-  char *tmp;
+  char *tmp = (char *)malloc(n + 1);
+  mote_bool ok;
   (void)p;
-  tmp = (char *)malloc(n + 1);
   if (!tmp) return MOTE_FALSE;
   memcpy(tmp, s, n);
   tmp[n] = 0;
-#if defined(MOTE_SDL3)
-  {
-    mote_bool ok = SDL_SetClipboardText(tmp) ? MOTE_TRUE : MOTE_FALSE;
-    free(tmp);
-    return ok;
-  }
-#else
-  {
-    int ok = SDL_SetClipboardText(tmp) == 0;
-    free(tmp);
-    return ok ? MOTE_TRUE : MOTE_FALSE;
-  }
-#endif
+  ok = SDL_OK(SDL_SetClipboardText(tmp)) ? MOTE_TRUE : MOTE_FALSE;
+  free(tmp);
+  return ok;
 }

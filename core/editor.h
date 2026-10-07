@@ -7,7 +7,7 @@
 #include "platform.h"
 
 #define MAX_DOCS 6
-#define MAX_RECENT 8
+#define MAX_RECENT MOTE_RECENT
 
 typedef enum {
   MODE_EDIT = 0,

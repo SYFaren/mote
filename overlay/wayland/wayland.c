@@ -1,7 +1,8 @@
 /* mote overlay/wayland — wl_shm + xdg-shell + xkbcommon */
 #include "platform.h"
 #include "soft.h"
-#include "soft_keys.h"
+#include "../evq.h"
+#include "keymap.h"
 
 #include "xdg-decoration-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
@@ -16,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 struct WlBuf {
@@ -51,29 +53,16 @@ struct Plat {
   int mx, my;
   char *clip;
   size_t clip_n;
-  PlatEvent q[128];
-  int qn;
+  EvQueue q;
   mote_bool ctrl, shift, alt;
+  /* Wayland leaves key repeat to the client */
+  int rep_rate, rep_delay;  /* keys per second, ms before the first repeat */
+  xkb_keycode_t rep_key;    /* held key being repeated, 0 = none */
+  long long rep_next;       /* monotonic ms of the next repeat */
 };
 
-static void qpush(Plat *p, PlatEvent *e) {
-  if (p->qn < (int)(sizeof p->q / sizeof p->q[0])) p->q[p->qn++] = *e;
-}
-static mote_bool qpop(Plat *p, PlatEvent *e) {
-  if (p->qn <= 0) return MOTE_FALSE;
-  *e = p->q[0];
-  p->qn--;
-  memmove(p->q, p->q + 1, (size_t)p->qn * sizeof p->q[0]);
-  return MOTE_TRUE;
-}
 static void key_nav(Plat *p, PlatKey k) {
-  PlatEvent e;
-  memset(&e, 0, sizeof e);
-  e.type = PE_KEY;
-  e.key = k;
-  e.ctrl = p->ctrl;
-  e.shift = p->shift;
-  qpush(p, &e);
+  evq_key(&p->q, k, p->ctrl, p->shift);
 }
 
 static int anon_shm(size_t size) {
@@ -186,13 +175,12 @@ static const struct xdg_surface_listener xdg_surface_listener = {
 static void xdg_toplevel_configure(void *data, struct xdg_toplevel *top,
                                    int32_t w, int32_t h, struct wl_array *states) {
   Plat *p = (Plat *)data;
-  PlatEvent e;
   (void)top;
   (void)states;
   /* Compositor may pass 0,0 = "client chooses". Keep current size then. */
   if (w > 0 && h > 0) {
-    if (w < 200) w = 200;
-    if (h < 120) h = 120;
+    if (w < MOTE_MIN_WIN_W) w = MOTE_MIN_WIN_W;
+    if (h < MOTE_MIN_WIN_H) h = MOTE_MIN_WIN_H;
     if (w != p->fb.w || h != p->fb.h) {
       soft_resize(&p->fb, w, h);
       make_bufs(p);
@@ -200,9 +188,7 @@ static void xdg_toplevel_configure(void *data, struct xdg_toplevel *top,
     if (p->xdgs)
       xdg_surface_set_window_geometry(p->xdgs, 0, 0, p->fb.w, p->fb.h);
   }
-  memset(&e, 0, sizeof e);
-  e.type = PE_EXPOSE;
-  qpush(p, &e);
+  evq_type(&p->q, PE_EXPOSE);
 }
 static void xdg_toplevel_close(void *data, struct xdg_toplevel *top) {
   Plat *p = (Plat *)data;
@@ -211,7 +197,7 @@ static void xdg_toplevel_close(void *data, struct xdg_toplevel *top) {
   p->running = 0;
   memset(&e, 0, sizeof e);
   e.type = PE_QUIT;
-  qpush(p, &e);
+  evq_push(&p->q, &e);
 }
 static void xdg_toplevel_configure_bounds(void *d, struct xdg_toplevel *t, int32_t w,
                                           int32_t h) {
@@ -260,98 +246,120 @@ static void kb_enter(void *d, struct wl_keyboard *k, uint32_t s, struct wl_surfa
   (void)sf;
   (void)keys;
 }
-static void kb_leave(void *d, struct wl_keyboard *k, uint32_t s, struct wl_surface *sf) {
-  (void)d;
+static void kb_leave(void *data, struct wl_keyboard *k, uint32_t s, struct wl_surface *sf) {
+  ((Plat *)data)->rep_key = 0;
   (void)k;
   (void)s;
   (void)sf;
 }
 
-static void kb_key(void *data, struct wl_keyboard *kb, uint32_t serial, uint32_t time,
-                   uint32_t key, uint32_t state) {
-  Plat *p = (Plat *)data;
-  xkb_keysym_t sym;
+/* ASCII for a keysym as the shared keymap sees it (keypad folded in). */
+static int sym_char(xkb_keysym_t sym) {
+  switch (sym) {
+  case XKB_KEY_KP_Add: return '+';
+  case XKB_KEY_KP_Subtract: return '-';
+  case XKB_KEY_KP_0: return '0';
+  case XKB_KEY_Tab:
+  case XKB_KEY_ISO_Left_Tab: return '\t';
+  case XKB_KEY_Return:
+  case XKB_KEY_KP_Enter: return '\r';
+  default: return sym >= 0x20 && sym < 0x7f ? (int)sym : 0;
+  }
+}
+
+/* Shortcut or navigation key → PE_KEY; MOTE_FALSE if it should type text. */
+static mote_bool map_sym(Plat *p, xkb_keycode_t code, xkb_keysym_t sym) {
+  int ch = sym_char(sym);
+  PlatKey pk = PK_NONE;
+  if (!ch && (p->ctrl || p->alt)) {
+    /* non-Latin layout: use the key's symbol in the first layout */
+    const xkb_keysym_t *syms;
+    if (xkb_keymap_key_get_syms_by_level(p->xkb_map, code, 0, 0, &syms) > 0)
+      ch = sym_char(syms[0]);
+  }
+  if (p->alt && !p->ctrl && ch) pk = key_alt(ch);
+  else if (p->ctrl && ch) pk = key_ctrl(ch, p->shift);
+  if (pk == PK_NONE) {
+    switch (sym) {
+    case XKB_KEY_Left: pk = PK_LEFT; break;
+    case XKB_KEY_Right: pk = PK_RIGHT; break;
+    case XKB_KEY_Up: pk = PK_UP; break;
+    case XKB_KEY_Down: pk = PK_DOWN; break;
+    case XKB_KEY_Home: pk = PK_HOME; break;
+    case XKB_KEY_End: pk = PK_END; break;
+    case XKB_KEY_Page_Up: pk = PK_PGUP; break;
+    case XKB_KEY_Page_Down: pk = PK_PGDN; break;
+    case XKB_KEY_BackSpace: pk = PK_BACKSPACE; break;
+    case XKB_KEY_Delete: pk = PK_DELETE; break;
+    case XKB_KEY_Return:
+    case XKB_KEY_KP_Enter: pk = PK_ENTER; break;
+    case XKB_KEY_Escape: pk = PK_ESCAPE; break;
+    case XKB_KEY_Tab:
+    case XKB_KEY_ISO_Left_Tab: pk = PK_TAB; break;
+    default:
+      if (sym >= XKB_KEY_F1 && sym <= XKB_KEY_F12)
+        pk = key_fn((int)(sym - XKB_KEY_F1) + 1, p->ctrl, p->shift);
+      break;
+    }
+  }
+  if (pk != PK_NONE) key_nav(p, pk);
+  return pk != PK_NONE || p->ctrl || p->alt;
+}
+
+static long long now_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void key_press(Plat *p, xkb_keycode_t code) {
+  xkb_keysym_t sym = xkb_state_key_get_one_sym(p->xkb_state, code);
   char buf[32];
   int n;
-  (void)kb;
-  (void)serial;
-  (void)time;
-  if (!p->xkb_state || state != WL_KEYBOARD_KEY_STATE_PRESSED) return;
-  sym = xkb_state_key_get_one_sym(p->xkb_state, key + 8);
   p->ctrl = xkb_state_mod_name_is_active(p->xkb_state, XKB_MOD_NAME_CTRL,
                                          XKB_STATE_MODS_EFFECTIVE) > 0;
   p->shift = xkb_state_mod_name_is_active(p->xkb_state, XKB_MOD_NAME_SHIFT,
                                           XKB_STATE_MODS_EFFECTIVE) > 0;
   p->alt = xkb_state_mod_name_is_active(p->xkb_state, XKB_MOD_NAME_ALT,
                                         XKB_STATE_MODS_EFFECTIVE) > 0;
-
-  if (p->ctrl || p->alt) {
-    PlatKey pk = PK_NONE;
-    if (sym >= XKB_KEY_a && sym <= XKB_KEY_z)
-      pk = soft_ctrl_letter((int)('A' + (sym - XKB_KEY_a)), p->shift, p->alt);
-    else if (sym >= XKB_KEY_A && sym <= XKB_KEY_Z)
-      pk = soft_ctrl_letter((int)sym, p->shift, p->alt);
-    else if (sym == XKB_KEY_equal || sym == XKB_KEY_plus)
-      pk = PK_ZOOMIN;
-    else if (sym == XKB_KEY_minus)
-      pk = PK_ZOOMOUT;
-    else if (sym == XKB_KEY_0)
-      pk = PK_ZOOMRESET;
-    else if (sym == XKB_KEY_bracketright)
-      pk = PK_BRACKET;
-    else if (sym == XKB_KEY_slash || sym == XKB_KEY_question)
-      pk = PK_COMMENT;
-    else if (sym == XKB_KEY_Tab)
-      pk = p->shift ? PK_PREVDOC : PK_NEXTDOC;
-    if (pk != PK_NONE) {
-      key_nav(p, pk);
-      return;
-    }
-  }
-
-  switch (sym) {
-  case XKB_KEY_Left: key_nav(p, PK_LEFT); return;
-  case XKB_KEY_Right: key_nav(p, PK_RIGHT); return;
-  case XKB_KEY_Up: key_nav(p, PK_UP); return;
-  case XKB_KEY_Down: key_nav(p, PK_DOWN); return;
-  case XKB_KEY_Home: key_nav(p, PK_HOME); return;
-  case XKB_KEY_End: key_nav(p, PK_END); return;
-  case XKB_KEY_Page_Up: key_nav(p, PK_PGUP); return;
-  case XKB_KEY_Page_Down: key_nav(p, PK_PGDN); return;
-  case XKB_KEY_BackSpace: key_nav(p, PK_BACKSPACE); return;
-  case XKB_KEY_Delete: key_nav(p, PK_DELETE); return;
-  case XKB_KEY_Return:
-  case XKB_KEY_KP_Enter:
-    if (p->ctrl && p->shift) key_nav(p, PK_BOOKMARK_SET);
-    else if (p->ctrl) key_nav(p, PK_BOOKMARK);
-    else key_nav(p, PK_ENTER);
-    return;
-  case XKB_KEY_Escape: key_nav(p, PK_ESCAPE); return;
-  case XKB_KEY_Tab: key_nav(p, PK_TAB); return;
-  case XKB_KEY_F1: key_nav(p, PK_F1); return;
-  case XKB_KEY_F2: key_nav(p, p->shift ? PK_PREVDOC : PK_NEXTDOC); return;
-  case XKB_KEY_F3: key_nav(p, p->shift ? PK_FINDPREV : PK_FINDNEXT); return;
-  case XKB_KEY_F4:
-    if (p->ctrl) key_nav(p, PK_CLOSEDOC);
-    return;
-  case XKB_KEY_F5: key_nav(p, PK_RELOAD); return;
-  case XKB_KEY_F7: key_nav(p, PK_WS); return;
-  case XKB_KEY_F8: key_nav(p, PK_BOOKMARK_SET); return;
-  case XKB_KEY_F9: key_nav(p, PK_BOOKMARK); return;
-  default: break;
-  }
-
-  if (p->ctrl || p->alt) return;
-  n = xkb_state_key_get_utf8(p->xkb_state, key + 8, buf, sizeof buf);
+  if (map_sym(p, code, sym)) return;
+  n = xkb_state_key_get_utf8(p->xkb_state, code, buf, sizeof buf);
   if (n > 0) {
-    PlatEvent e;
-    memset(&e, 0, sizeof e);
-    e.type = PE_TEXT;
-    if (n > (int)sizeof e.text) n = (int)sizeof e.text;
-    memcpy(e.text, buf, (size_t)n);
-    e.text_len = n;
-    qpush(p, &e);
+    if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
+    evq_text(&p->q, buf, n);
+    evq_flush_text(&p->q);
   }
+}
+
+static void kb_key(void *data, struct wl_keyboard *kb, uint32_t serial, uint32_t time,
+                   uint32_t key, uint32_t state) {
+  Plat *p = (Plat *)data;
+  xkb_keycode_t code = key + 8;
+  (void)kb;
+  (void)serial;
+  (void)time;
+  if (!p->xkb_state) return;
+  if (state != WL_KEYBOARD_KEY_STATE_PRESSED) {
+    if (code == p->rep_key) p->rep_key = 0;
+    return;
+  }
+  key_press(p, code);
+  p->rep_key = 0;
+  if (p->rep_rate > 0 && xkb_keymap_key_repeats(p->xkb_map, code)) {
+    p->rep_key = code;
+    p->rep_next = now_ms() + p->rep_delay;
+  }
+}
+
+/* Fire the held key if its repeat is due. */
+static void key_repeat_tick(Plat *p) {
+  long long now;
+  if (!p->rep_key) return;
+  now = now_ms();
+  if (now < p->rep_next) return;
+  key_press(p, p->rep_key);
+  p->rep_next += 1000 / p->rep_rate;
+  if (p->rep_next < now) p->rep_next = now + 1000 / p->rep_rate; /* we were stalled */
 }
 
 static void kb_modifiers(void *data, struct wl_keyboard *kb, uint32_t serial,
@@ -363,11 +371,12 @@ static void kb_modifiers(void *data, struct wl_keyboard *kb, uint32_t serial,
   if (p->xkb_state)
     xkb_state_update_mask(p->xkb_state, depressed, latched, locked, 0, 0, group);
 }
-static void kb_repeat(void *d, struct wl_keyboard *k, int32_t r, int32_t delay) {
-  (void)d;
+static void kb_repeat(void *data, struct wl_keyboard *k, int32_t rate, int32_t delay) {
+  Plat *p = (Plat *)data;
   (void)k;
-  (void)r;
-  (void)delay;
+  p->rep_rate = rate > 0 ? rate : 0;
+  p->rep_delay = delay > 0 ? delay : 0;
+  if (!p->rep_rate) p->rep_key = 0;
 }
 static const struct wl_keyboard_listener kb_listener = {
     kb_keymap, kb_enter, kb_leave, kb_key, kb_modifiers, kb_repeat};
@@ -399,7 +408,7 @@ static void ptr_motion(void *data, struct wl_pointer *ptr, uint32_t time, wl_fix
   e.type = PE_MOUSE_MOVE;
   e.mx = p->mx;
   e.my = p->my;
-  qpush(p, &e);
+  evq_push(&p->q, &e);
 }
 static void ptr_button(void *data, struct wl_pointer *ptr, uint32_t serial, uint32_t time,
                        uint32_t button, uint32_t state) {
@@ -413,7 +422,7 @@ static void ptr_button(void *data, struct wl_pointer *ptr, uint32_t serial, uint
   e.type = state == WL_POINTER_BUTTON_STATE_PRESSED ? PE_MOUSE_DOWN : PE_MOUSE_UP;
   e.mx = p->mx;
   e.my = p->my;
-  qpush(p, &e);
+  evq_push(&p->q, &e);
 }
 static void ptr_axis(void *data, struct wl_pointer *ptr, uint32_t time, uint32_t axis,
                      wl_fixed_t value) {
@@ -425,7 +434,7 @@ static void ptr_axis(void *data, struct wl_pointer *ptr, uint32_t time, uint32_t
   memset(&e, 0, sizeof e);
   e.type = PE_SCROLL;
   e.wheel = wl_fixed_to_int(value) > 0 ? -1 : 1;
-  qpush(p, &e);
+  evq_push(&p->q, &e);
 }
 static void ptr_frame(void *d, struct wl_pointer *p) {
   (void)d;
@@ -454,17 +463,18 @@ static void ptr_axis_value120(void *d, struct wl_pointer *p, uint32_t a, int32_t
   (void)a;
   (void)v;
 }
+/* Designated so newer headers' extra events (sent only to seat v9+) stay NULL. */
 static const struct wl_pointer_listener ptr_listener = {
-    ptr_enter,
-    ptr_leave,
-    ptr_motion,
-    ptr_button,
-    ptr_axis,
-    ptr_frame,
-    ptr_axis_source,
-    ptr_axis_stop,
-    ptr_axis_discrete,
-    ptr_axis_value120};
+    .enter = ptr_enter,
+    .leave = ptr_leave,
+    .motion = ptr_motion,
+    .button = ptr_button,
+    .axis = ptr_axis,
+    .frame = ptr_frame,
+    .axis_source = ptr_axis_source,
+    .axis_stop = ptr_axis_stop,
+    .axis_discrete = ptr_axis_discrete,
+    .axis_value120 = ptr_axis_value120};
 
 static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps) {
   Plat *p = (Plat *)data;
@@ -528,7 +538,7 @@ Plat *plat_create(const char *title, int w, int h) {
     plat_destroy(p);
     return NULL;
   }
-  soft_set_font_px(&p->fb, 16);
+  soft_set_font_px(&p->fb, MOTE_FONT_PX);
   if (!soft_resize(&p->fb, w, h) || !make_bufs(p)) {
     plat_destroy(p);
     return NULL;
@@ -540,7 +550,7 @@ Plat *plat_create(const char *title, int w, int h) {
   xdg_toplevel_add_listener(p->top, &xdg_toplevel_listener, p);
   xdg_toplevel_set_title(p->top, title ? title : "mote");
   xdg_toplevel_set_app_id(p->top, "mote");
-  xdg_toplevel_set_min_size(p->top, 200, 120);
+  xdg_toplevel_set_min_size(p->top, MOTE_MIN_WIN_W, MOTE_MIN_WIN_H);
   /* No CSD of our own: without server-side decorations (e.g. GNOME) the window stays bare. */
   if (p->deco_mgr) {
     p->deco = zxdg_decoration_manager_v1_get_toplevel_decoration(p->deco_mgr, p->top);
@@ -558,12 +568,7 @@ Plat *plat_create(const char *title, int w, int h) {
   }
   wl_surface_commit(p->surf);
   while (!p->configured) wl_display_dispatch(p->dpy);
-  {
-    PlatEvent e;
-    memset(&e, 0, sizeof e);
-    e.type = PE_EXPOSE;
-    qpush(p, &e);
-  }
+  evq_type(&p->q, PE_EXPOSE);
   return p;
 }
 
@@ -593,19 +598,26 @@ void plat_destroy(Plat *p) {
 
 void plat_wait(Plat *p) {
   struct pollfd pfd;
-  if (p->qn > 0) return;
+  int timeout = -1;
+  if (p->q.n > 0) return;
+  if (p->rep_key) {
+    long long left = p->rep_next - now_ms();
+    timeout = left > 0 ? (int)left : 0;
+  }
   while (wl_display_prepare_read(p->dpy) != 0) wl_display_dispatch_pending(p->dpy);
   wl_display_flush(p->dpy);
   pfd.fd = wl_display_get_fd(p->dpy);
   pfd.events = POLLIN;
-  poll(&pfd, 1, -1);
-  wl_display_read_events(p->dpy);
+  if (poll(&pfd, 1, timeout) > 0) wl_display_read_events(p->dpy);
+  else wl_display_cancel_read(p->dpy);
   wl_display_dispatch_pending(p->dpy);
 }
 
 mote_bool plat_poll(Plat *p, PlatEvent *ev) {
   wl_display_dispatch_pending(p->dpy);
-  if (qpop(p, ev)) return MOTE_TRUE;
+  if (evq_pop(&p->q, ev)) return MOTE_TRUE;
+  key_repeat_tick(p);
+  if (evq_pop(&p->q, ev)) return MOTE_TRUE;
   if (!p->running) {
     ev->type = PE_QUIT;
     return MOTE_TRUE;
@@ -647,26 +659,7 @@ void plat_end_frame(Plat *p) {
     for (i = 0; i < n; i++)
       dst[i] = (unsigned int)(p->fb.px[i] | 0xFF000000u);
   }
-  {
-    static int dumped;
-    const char *dump = getenv("MOTE_DUMP_FB");
-    /* Prefer soft FB dump — nested Weston/GL scrot invents stripes. */
-    if (dump && !dumped) {
-      FILE *f = fopen(dump, "wb");
-      int x, y;
-      if (f) {
-        fprintf(f, "P6\n%d %d\n255\n", p->fb.w, p->fb.h);
-        for (y = 0; y < p->fb.h; y++)
-          for (x = 0; x < p->fb.w; x++) {
-            mote_u32 c = p->fb.px[(size_t)y * (size_t)p->fb.w + (size_t)x];
-            unsigned char rgb[3] = {(c >> 16) & 255, (c >> 8) & 255, c & 255};
-            fwrite(rgb, 1, 3, f);
-          }
-        fclose(f);
-      }
-      dumped = 1;
-    }
-  }
+  soft_dump_once(&p->fb);
   slot->busy = 1;
   wl_surface_attach(p->surf, slot->buf, 0, 0);
   wl_surface_damage_buffer(p->surf, 0, 0, p->fb.w, p->fb.h);

@@ -1,6 +1,9 @@
 /* mote overlay/dos — VGA text mode (DJGPP / FreeDOS) */
 #include "platform.h"
+#include "common.h"
+#include "keymap.h"
 #include "utf8.h"
+#include "../evq.h"
 
 #include <bios.h>
 #include <dpmi.h>
@@ -16,6 +19,11 @@
 
 #include "font_cp866.inc"
 
+/* Mode 03h is always 80x25 in VRAM; a smaller -g uses its top-left corner. */
+#define VGA_COLS 80
+#define VGA_ROWS 25
+#define VGA_TEXT 0xB8000UL
+
 /* VGA text cell: char + attribute */
 typedef struct {
   unsigned char ch;
@@ -24,15 +32,13 @@ typedef struct {
 } Cell;
 
 struct Plat {
-  int cols, rows, font_px, caret_x, caret_y, q_n, text_n;
+  int cols, rows, font_px, caret_x, caret_y;
   mote_bool caret_on;
   Cell *cells;
   Cell *prev; /* for dirty redraw */
   char *clip;
   size_t clip_n;
-  unsigned short vseg; /* B800 */
-  char text_acc[32];
-  PlatEvent q[128];
+  EvQueue q;
 };
 
 /* Curated 16-color palette tuned for mote themes (programmed into VGA DAC). */
@@ -164,8 +170,8 @@ static mote_bool resize(Plat *p, int cols, int rows) {
   size_t n;
   if (cols < 40) cols = 40;
   if (rows < 10) rows = 10;
-  if (cols > 132) cols = 132;
-  if (rows > 60) rows = 60;
+  if (cols > VGA_COLS) cols = VGA_COLS;
+  if (rows > VGA_ROWS) rows = VGA_ROWS;
   n = (size_t)cols * (size_t)rows;
   c = (Cell *)calloc(n, sizeof(Cell));
   pr = (Cell *)calloc(n, sizeof(Cell));
@@ -184,72 +190,18 @@ static mote_bool resize(Plat *p, int cols, int rows) {
   return MOTE_TRUE;
 }
 
-static void qpush(Plat *p, PlatEvent *e) {
-  if (p->q_n < (int)(sizeof p->q / sizeof p->q[0])) p->q[p->q_n++] = *e;
-}
-
-static mote_bool qpop(Plat *p, PlatEvent *e) {
-  if (p->q_n <= 0) return MOTE_FALSE;
-  *e = p->q[0];
-  p->q_n--;
-  memmove(p->q, p->q + 1, (size_t)p->q_n * sizeof p->q[0]);
-  return MOTE_TRUE;
-}
-
-static void key(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
-  PlatEvent e;
-  memset(&e, 0, sizeof e);
-  e.type = PE_KEY;
-  e.key = k;
-  e.ctrl = ctrl;
-  e.shift = shift;
-  qpush(p, &e);
-}
-
-static void text1(Plat *p, const char *s, int n) {
-  PlatEvent e;
-  memset(&e, 0, sizeof e);
-  e.type = PE_TEXT;
-  if (n > (int)sizeof e.text) n = (int)sizeof e.text;
-  if (n <= 0) return;
-  memcpy(e.text, s, (size_t)n);
-  e.text_len = n;
-  qpush(p, &e);
-}
-
-static void text_flush(Plat *p) {
-  if (p->text_n <= 0) return;
-  text1(p, p->text_acc, p->text_n);
-  p->text_n = 0;
-}
-
-static void text_add(Plat *p, const char *s, int n) {
-  int i;
-  for (i = 0; i < n; i++) {
-    if (p->text_n >= (int)sizeof p->text_acc) text_flush(p);
-    p->text_acc[p->text_n++] = s[i];
-  }
-}
-
-static void key_trace(int raw, const char *action) {
+/* MOTE_KEYTRACE=1: log raw getkey() codes and the keys they became. */
+static void key_trace(int raw, const PlatEvent *e) {
   FILE *f;
-  if (!getenv("MOTE_KEYTRACE")) return;
-  f = fopen("KEYTRACE.LOG", "a");
-  if (!f) return;
-  fprintf(f, "raw=%d action=%s\n", raw, action ? action : "?");
+  if (!getenv("MOTE_KEYTRACE") || !(f = fopen("KEYTRACE.LOG", "a"))) return;
+  if (e) fprintf(f, "platkey=%d ctrl=%d shift=%d\n", (int)e->key, (int)e->ctrl, (int)e->shift);
+  else fprintf(f, "raw=%d\n", raw);
   fclose(f);
 }
 
 static void key_flush(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
-  text_flush(p);
-  if (getenv("MOTE_KEYTRACE")) {
-    FILE *f = fopen("KEYTRACE.LOG", "a");
-    if (f) {
-      fprintf(f, "platkey=%d ctrl=%d shift=%d\n", (int)k, (int)ctrl, (int)shift);
-      fclose(f);
-    }
-  }
-  key(p, k, ctrl, shift);
+  evq_key(&p->q, k, ctrl, shift);
+  key_trace(0, &p->q.ev[p->q.n - 1]);
 }
 
 /* BIOS shift flags (0040:0017): bit0/1 = Shift, bit2 = Ctrl, bit3 = Alt. */
@@ -259,150 +211,89 @@ static unsigned bios_shifts(void) {
 static mote_bool shift_down(void) { return (bios_shifts() & 0x03u) != 0; }
 static mote_bool ctrl_down(void) { return (bios_shifts() & 0x04u) != 0; }
 
-static void ctrl_key(Plat *p, int c, mote_bool shift) {
-  char lo = (char)c;
-  PlatKey k = PK_NONE;
-  if (lo >= 'A' && lo <= 'Z') lo = (char)(lo - 'A' + 'a');
-  switch (lo) {
-  case 's': k = shift ? PK_SAVEAS : PK_SAVE; break;
-  case 'o': k = PK_OPEN; break;
-  case 'q': k = PK_QUIT; break;
-  case 'z': k = PK_UNDO; break;
-  case 'y': k = PK_REDO; break;
-  case 'f': k = PK_FIND; break;
-  case 'g': k = PK_GOTO; break;
-  case 'r': k = shift ? PK_READONLY : PK_REPLACE; break;
-  case 'x': k = PK_CUT; break;
-  case 'c': k = PK_COPY; break;
-  case 'v': k = PK_PASTE; break;
-  case 'a': k = PK_SELALL; break;
-  case 't': k = PK_THEME; break;
-  case 'w': k = shift ? PK_CLOSEDOC : PK_WRAP; break;
-  case 'd': k = PK_DUPLINE; break;
-  case 'n': k = PK_NEWDOC; break;
-  case 'e': k = shift ? PK_EOL : PK_RECENT; break;
-  case 'k':
-    if (shift) k = PK_DELLINE;
-    break;
-  case 'm':
-    if (shift) k = PK_BOOKMARK_SET;
-    else k = PK_BOOKMARK;
-    break;
-  case 'p': k = shift ? PK_BOOKMARK_SET : PK_QUICKOPEN; break;
-  default: break;
-  }
-  if (k != PK_NONE) key_flush(p, k, MOTE_TRUE, shift);
+static void emit(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
+  if (k != PK_NONE) key_flush(p, k, ctrl, shift);
 }
 
-static void alt_letter(Plat *p, int c) {
-  /* Mirrors soft_keys.h Alt bindings (reliable when Ctrl+Shift is awkward). */
-  PlatKey k = PK_NONE;
-  if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
-  switch (c) {
-  case 'C': k = PK_FINDCASE; break;
-  case 'W': k = PK_FINDWORD; break;
-  case 'S': k = PK_SAVEAS; break;
-  case 'R': k = PK_READONLY; break;
-  case 'K': k = PK_DELLINE; break;
-  case 'E': k = PK_EOL; break;
-  case 'H': k = PK_HELP; break;
-  case 'N': k = PK_NEXTDOC; break;
-  case 'P': k = PK_PREVDOC; break;
-  case 'M': k = PK_BOOKMARK_SET; break;
-  case 'J': k = PK_BOOKMARK; break;
-  default: break;
+/* Alt+letter arrives as 0x100 + keyboard scancode (row order, not ABC). */
+static int alt_letter(int k) {
+  static const char rows[] = "qwertyuiop" "\0\0\0\0" "asdfghjkl" "\0\0\0\0\0" "zxcvbnm";
+  int sc = k - K_Alt_Q;
+  return sc >= 0 && sc < (int)sizeof rows - 1 ? rows[sc] : 0;
+}
+
+/* F1-F10 plain / Shift / Ctrl / Alt, each a run of ten codes; 0 if not one. */
+static int fn_number(int k, mote_bool *ctrl, mote_bool *shift) {
+  *ctrl = *shift = MOTE_FALSE;
+  if (k >= K_F1 && k < K_F1 + 10) return k - K_F1 + 1;
+  if (k >= K_Shift_F1 && k < K_Shift_F1 + 10) {
+    *shift = MOTE_TRUE;
+    return k - K_Shift_F1 + 1;
   }
-  if (k != PK_NONE) key_flush(p, k, MOTE_FALSE, MOTE_FALSE);
+  if (k >= K_Control_F1 && k < K_Control_F1 + 10) {
+    *ctrl = MOTE_TRUE;
+    return k - K_Control_F1 + 1;
+  }
+  if (k >= K_Alt_F1 && k < K_Alt_F1 + 10) {
+    *ctrl = MOTE_TRUE; /* Alt+F4 closes the file like Ctrl+F4 */
+    return k - K_Alt_F1 + 1;
+  }
+  return 0;
+}
+
+static PlatKey nav_key(int k, mote_bool *ctrl, mote_bool *shift) {
+  *ctrl = *shift = MOTE_FALSE;
+  switch (k) {
+  case K_Left: return PK_LEFT;
+  case K_Right: return PK_RIGHT;
+  case K_Up: return PK_UP;
+  case K_Down: return PK_DOWN;
+  case K_Home: return PK_HOME;
+  case K_End: return PK_END;
+  case K_PageUp: return PK_PGUP;
+  case K_PageDown: return PK_PGDN;
+  case K_Delete: return PK_DELETE;
+  case K_BackTab: *shift = MOTE_TRUE; return PK_TAB;
+  case K_Control_Left: *ctrl = MOTE_TRUE; return PK_LEFT;
+  case K_Control_Right: *ctrl = MOTE_TRUE; return PK_RIGHT;
+  case K_Control_Home: *ctrl = MOTE_TRUE; return PK_HOME;
+  case K_Control_End: *ctrl = MOTE_TRUE; return PK_END;
+  case K_Alt_Equals: return PK_ZOOMIN;
+  default: return PK_NONE;
+  }
 }
 
 static void ingest_key(Plat *p, int k) {
-  /* DJGPP getkey(): 8=BS, 9=Tab/Ctrl+I, 13=Enter, 27=Esc must beat Ctrl+A..Z
-   * (ASCII 1..26), because BS is also Ctrl+H (=8). */
+  mote_bool ctrl, shift;
+  PlatKey pk;
+  int n;
+  key_trace(k, NULL);
+  /* getkey(): 8 = BS, 9 = Tab, 13 = Enter, 27 = Esc share codes with
+     Ctrl+H/I/M/[ and must be checked before the Ctrl+letter range. */
   if (k == 8 || k == 127 || k == K_BackSpace || k == K_Control_Backspace) {
-    key_trace(k, "backspace");
     key_flush(p, PK_BACKSPACE, MOTE_FALSE, MOTE_FALSE);
-    return;
-  }
-  if (k == 9) {
-    /* Tab / Ctrl+I / Ctrl+Tab share code 9 — use BIOS ctrl/shift. */
-    if (ctrl_down()) {
-      key_flush(p, shift_down() ? PK_PREVDOC : PK_NEXTDOC, MOTE_TRUE,
-                shift_down());
-    } else {
-      key_flush(p, PK_TAB, MOTE_FALSE, MOTE_FALSE);
-    }
-    return;
-  }
-  if (k == 13) {
+  } else if (k == 9) { /* Tab and Ctrl+Tab share code 9: ask the BIOS */
+    ctrl = ctrl_down();
+    shift = shift_down();
+    key_flush(p, ctrl ? key_ctrl('\t', shift) : PK_TAB, ctrl, shift);
+  } else if (k == 13) {
     key_flush(p, PK_ENTER, MOTE_FALSE, MOTE_FALSE);
-    return;
-  }
-  if (k == 27 || k == K_Escape) {
+  } else if (k == 27 || k == K_Escape) {
     key_flush(p, PK_ESCAPE, MOTE_FALSE, MOTE_FALSE);
-    return;
-  }
-  /* Ctrl+] / Ctrl+_ (zoom-) — outside 1..26 letter range. */
-  if (k == K_Control_RBracket) {
-    key_flush(p, PK_BRACKET, MOTE_TRUE, MOTE_FALSE);
-    return;
-  }
-  if (k == K_Control_Underscore) {
-    key_flush(p, PK_ZOOMOUT, MOTE_TRUE, MOTE_FALSE);
-    return;
-  }
-  if (k == K_Control_Caret) {
+  } else if (k == K_Control_Caret) { /* Ctrl+= has no code; Ctrl+6 zooms in */
     key_flush(p, PK_ZOOMIN, MOTE_TRUE, MOTE_FALSE);
-    return;
-  }
-  if (k >= 1 && k <= 26) {
-    ctrl_key(p, 'a' + k - 1, shift_down());
-    return;
-  }
-  if (k >= 32 && k < 127) {
+  } else if (k >= 1 && k < 32) { /* Ctrl+A..Z, Ctrl+\ ] _ */
+    shift = shift_down();
+    emit(p, key_ctrl(k | 0x40, shift), MOTE_TRUE, shift);
+  } else if (k >= 32 && k < 127) {
     char ch = (char)k;
-    text_add(p, &ch, 1);
-    return;
-  }
-
-  /* Extended / special (DJGPP keys.h) */
-  switch (k) {
-  case K_Left: key_flush(p, PK_LEFT, MOTE_FALSE, MOTE_FALSE); break;
-  case K_Right: key_flush(p, PK_RIGHT, MOTE_FALSE, MOTE_FALSE); break;
-  case K_Up: key_flush(p, PK_UP, MOTE_FALSE, MOTE_FALSE); break;
-  case K_Down: key_flush(p, PK_DOWN, MOTE_FALSE, MOTE_FALSE); break;
-  case K_Home: key_flush(p, PK_HOME, MOTE_FALSE, MOTE_FALSE); break;
-  case K_End: key_flush(p, PK_END, MOTE_FALSE, MOTE_FALSE); break;
-  case K_PageUp: key_flush(p, PK_PGUP, MOTE_FALSE, MOTE_FALSE); break;
-  case K_PageDown: key_flush(p, PK_PGDN, MOTE_FALSE, MOTE_FALSE); break;
-  case K_Delete: key_flush(p, PK_DELETE, MOTE_FALSE, MOTE_FALSE); break;
-  case K_BackTab: key_flush(p, PK_TAB, MOTE_FALSE, MOTE_TRUE); break;
-  case K_F1: key_flush(p, PK_HELP, MOTE_FALSE, MOTE_FALSE); break;
-  case K_F2: key_flush(p, PK_NEXTDOC, MOTE_FALSE, MOTE_FALSE); break;
-  case K_Shift_F2: key_flush(p, PK_PREVDOC, MOTE_FALSE, MOTE_TRUE); break;
-  case K_F3: key_flush(p, PK_FINDNEXT, MOTE_FALSE, MOTE_FALSE); break;
-  case K_Shift_F3: key_flush(p, PK_FINDPREV, MOTE_FALSE, MOTE_TRUE); break;
-  case K_F5: key_flush(p, PK_RELOAD, MOTE_FALSE, MOTE_FALSE); break;
-  case K_F7: key_flush(p, PK_WS, MOTE_FALSE, MOTE_FALSE); break;
-  case K_F8: key_flush(p, PK_BOOKMARK_SET, MOTE_FALSE, MOTE_FALSE); break;
-  case K_F9: key_flush(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE); break;
-  case K_Control_F4:
-  case K_Alt_F4: key_flush(p, PK_CLOSEDOC, MOTE_TRUE, MOTE_FALSE); break;
-  case K_Control_Left: key_flush(p, PK_LEFT, MOTE_TRUE, MOTE_FALSE); break;
-  case K_Control_Right: key_flush(p, PK_RIGHT, MOTE_TRUE, MOTE_FALSE); break;
-  case K_Control_Home: key_flush(p, PK_HOME, MOTE_TRUE, MOTE_FALSE); break;
-  case K_Control_End: key_flush(p, PK_END, MOTE_TRUE, MOTE_FALSE); break;
-  case K_Alt_Equals: key_flush(p, PK_ZOOMIN, MOTE_FALSE, MOTE_FALSE); break;
-  case K_Alt_H: alt_letter(p, 'H'); break;
-  case K_Alt_C: alt_letter(p, 'C'); break;
-  case K_Alt_W: alt_letter(p, 'W'); break;
-  case K_Alt_S: alt_letter(p, 'S'); break;
-  case K_Alt_R: alt_letter(p, 'R'); break;
-  case K_Alt_K: alt_letter(p, 'K'); break;
-  case K_Alt_E: alt_letter(p, 'E'); break;
-  case K_Alt_N: alt_letter(p, 'N'); break;
-  case K_Alt_P: alt_letter(p, 'P'); break;
-  default:
-    break;
+    evq_text(&p->q, &ch, 1);
+  } else if (alt_letter(k)) {
+    emit(p, key_alt(alt_letter(k)), MOTE_FALSE, MOTE_FALSE);
+  } else if ((n = fn_number(k, &ctrl, &shift)) != 0) {
+    emit(p, key_fn(n, ctrl, shift), ctrl, shift);
+  } else if ((pk = nav_key(k, &ctrl, &shift)) != PK_NONE) {
+    key_flush(p, pk, ctrl, shift);
   }
 }
 
@@ -454,28 +345,24 @@ static void vga_load_cp866_font(void) {
   hide_hw_cursor();
 }
 
-static void poke_cell(Plat *p, int x, int y, unsigned char ch, unsigned char attr) {
-  unsigned long addr = 0xB8000UL + (unsigned long)((y * p->cols + x) * 2);
-  (void)p->vseg;
+static void poke_cell(int x, int y, unsigned char ch, unsigned char attr) {
+  unsigned long addr = VGA_TEXT + (unsigned long)((y * VGA_COLS + x) * 2);
   _farpokeb(_dos_ds, addr, ch);
   _farpokeb(_dos_ds, addr + 1, attr);
 }
 
 Plat *plat_create(const char *title, int w, int h) {
   Plat *p;
-  int cols = 80, rows = 25;
+  int cols = VGA_COLS, rows = VGA_ROWS;
   (void)title;
   p = (Plat *)calloc(1, sizeof *p);
   if (!p) return NULL;
-  p->font_px = 16;
-  p->vseg = 0xB800;
-  if (w >= 40 && w <= 132) cols = w;
-  if (h >= 10 && h <= 60) rows = h;
+  p->font_px = MOTE_FONT_PX;
+  if (w >= 40 && w <= VGA_COLS) cols = w;
+  if (h >= 10 && h <= VGA_ROWS) rows = h;
   set_text_mode();
   vga_load_cp866_font();
   vga_load_palette();
-  /* If user asked 50 rows, try INT10 mode / font — keep 25 for max compat */
-  if (rows > 25) rows = 25;
   if (!resize(p, cols, rows)) {
     free(p);
     return NULL;
@@ -493,8 +380,8 @@ void plat_destroy(Plat *p) {
 }
 
 void plat_wait(Plat *p) {
-  text_flush(p);
-  if (p->q_n > 0) return;
+  evq_flush_text(&p->q);
+  if (p->q.n > 0) return;
   while (!kbhit()) {
     /* yield a bit */
     __dpmi_yield();
@@ -503,14 +390,14 @@ void plat_wait(Plat *p) {
 
 mote_bool plat_poll(Plat *p, PlatEvent *ev) {
   memset(ev, 0, sizeof *ev);
-  if (qpop(p, ev)) return MOTE_TRUE;
+  if (evq_pop(&p->q, ev)) return MOTE_TRUE;
   if (!kbhit()) {
-    text_flush(p);
-    return qpop(p, ev);
+    evq_flush_text(&p->q);
+    return evq_pop(&p->q, ev);
   }
   ingest_key(p, getkey());
-  text_flush(p);
-  return qpop(p, ev);
+  evq_flush_text(&p->q);
+  return evq_pop(&p->q, ev);
 }
 
 void plat_get_size(Plat *p, int *w, int *h) {
@@ -526,8 +413,8 @@ int plat_font_h(Plat *p) {
   return 1;
 }
 void plat_set_font_px(Plat *p, int px) {
-  if (px < 8) px = 8;
-  if (px > 48) px = 48;
+  if (px < MOTE_FONT_MIN) px = MOTE_FONT_MIN;
+  if (px > MOTE_FONT_MAX) px = MOTE_FONT_MAX;
   p->font_px = px;
 }
 int plat_font_px(Plat *p) { return p->font_px; }
@@ -591,14 +478,15 @@ void plat_end_frame(Plat *p) {
       Cell *pr = &p->prev[idx(p, x, y)];
       unsigned char ch = c->ch ? c->ch : ' ';
       unsigned char attr = c->attr;
-  if (p->caret_on && x == p->caret_x && y == p->caret_y) {
-    /* Reverse video; keep both nibbles in 0..7 so bit7 never blinks. */
-    unsigned char f = attr & 0x07;
-    unsigned char b = (attr >> 4) & 0x07;
-    attr = (unsigned char)((f << 4) | b);
-    if (f == b) attr ^= 0x77;
-  }      if (pr->ch != ch || pr->attr != attr) {
-        poke_cell(p, x, y, ch, attr);
+      if (p->caret_on && x == p->caret_x && y == p->caret_y) {
+        /* Reverse video; keep both nibbles in 0..7 so bit7 never blinks. */
+        unsigned char f = attr & 0x07;
+        unsigned char b = (attr >> 4) & 0x07;
+        attr = (unsigned char)((f << 4) | b);
+        if (f == b) attr ^= 0x77;
+      }
+      if (pr->ch != ch || pr->attr != attr) {
+        poke_cell(x, y, ch, attr);
         pr->ch = ch;
         pr->attr = attr;
       }

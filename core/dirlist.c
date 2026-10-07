@@ -3,17 +3,17 @@
 #include "mote_snprintf.h"
 #include <string.h>
 
-#if defined(_WIN32) && !defined(__DJGPP__)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <wchar.h>
-
 static int push_name(char out[DIRLIST_MAX][256], int n, int max, const char *name) {
   if (n >= max || !name || !name[0] || name[0] == '.') return n;
   if (strlen(name) >= 256) return n;
   strcpy(out[n], name);
   return n + 1;
 }
+
+#if defined(_WIN32) && !defined(__DJGPP__)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <wchar.h>
 
 int dirlist_files(const char *dir, char out[DIRLIST_MAX][256], int max_out) {
   wchar_t wdir[512];
@@ -41,13 +41,6 @@ int dirlist_files(const char *dir, char out[DIRLIST_MAX][256], int max_out) {
 #else
 #include <dirent.h>
 #include <sys/stat.h>
-
-static int push_name(char out[DIRLIST_MAX][256], int n, int max, const char *name) {
-  if (n >= max || !name || !name[0] || name[0] == '.') return n;
-  if (strlen(name) >= 256) return n;
-  strcpy(out[n], name);
-  return n + 1;
-}
 
 int dirlist_files(const char *dir, char out[DIRLIST_MAX][256], int max_out) {
   DIR *d;

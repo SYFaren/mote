@@ -1,6 +1,8 @@
-/* mote overlay/win32 — OS file + config path (UTF-8 paths) */
+/* mote overlay/win32 — files and config path; every path is UTF-8 */
 #include "platform.h"
 #include "common.h"
+#include "mote_snprintf.h"
+#include "winutil.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -12,27 +14,12 @@
 #include <fcntl.h>
 #include <direct.h>
 
-static wchar_t *utf8_to_wide(const char *s) {
-  int n;
-  wchar_t *w;
-  if (!s) return NULL;
-  n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
-  if (n <= 0) return NULL;
-  w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
-  if (!w) return NULL;
-  if (!MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n)) {
-    free(w);
-    return NULL;
-  }
-  return w;
-}
-
 FILE *plat_fopen(const char *path, const char *mode) {
   wchar_t *wp, wm[8];
   FILE *f;
   int i;
   if (!path || !mode) return NULL;
-  wp = utf8_to_wide(path);
+  wp = win_wide(path);
   if (!wp) return NULL;
   for (i = 0; mode[i] && i < 7; i++) wm[i] = (wchar_t)(unsigned char)mode[i];
   wm[i] = 0;
@@ -42,7 +29,7 @@ FILE *plat_fopen(const char *path, const char *mode) {
 }
 
 int plat_remove(const char *path) {
-  wchar_t *w = utf8_to_wide(path);
+  wchar_t *w = win_wide(path);
   BOOL ok;
   if (!w) return -1;
   ok = DeleteFileW(w);
@@ -51,8 +38,8 @@ int plat_remove(const char *path) {
 }
 
 int plat_rename(const char *from, const char *to) {
-  wchar_t *wfrom = utf8_to_wide(from);
-  wchar_t *wto = utf8_to_wide(to);
+  wchar_t *wfrom = win_wide(from);
+  wchar_t *wto = win_wide(to);
   BOOL ok;
   if (!wfrom || !wto) {
     free(wfrom);
@@ -73,14 +60,19 @@ void plat_fsync_file(FILE *f) {
   if (fd >= 0) (void)_commit(fd);
 }
 
+/* %APPDATA%\mote\config. Read APPDATA wide: the ANSI value cannot hold
+   e.g. a Cyrillic user name on a non-Cyrillic system locale. */
 int plat_config_path(char *out, size_t n) {
-  const char *home;
-  char dir[512];
-  home = getenv("APPDATA");
-  if (!home || !home[0]) return -1;
-  if (snprintf(dir, sizeof dir, "%s\\" MOTE_NAME, home) >= (int)sizeof dir)
-    return -1;
-  _mkdir(dir);
-  if (snprintf(out, n, "%s\\config", dir) >= (int)n) return -1;
-  return 0;
+  const wchar_t *home = _wgetenv(L"APPDATA");
+  char *dir;
+  wchar_t *wdir;
+  int r = -1;
+  if (!home || !home[0] || !(dir = win_utf8(home))) return -1;
+  if (mote_snprintf(out, n, "%s\\%s", dir, MOTE_NAME) < (int)n && (wdir = win_wide(out))) {
+    _wmkdir(wdir);
+    free(wdir);
+    if (mote_snprintf(out, n, "%s\\%s\\config", dir, MOTE_NAME) < (int)n) r = 0;
+  }
+  free(dir);
+  return r;
 }

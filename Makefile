@@ -45,7 +45,8 @@ wasm:
 ANSI_CFLAGS = -std=c89 -pedantic -Wall -Wextra -Wdeclaration-after-statement \
 	-Wno-long-long -Wno-overlength-strings -Icore -Iplat -c
 CORE_ANSI = core/buffer.c core/utf8.c core/undo.c core/hl.c core/editor.c \
-	core/theme.c core/config.c core/mote_snprintf.c core/regex.c core/dirlist.c core/app.c
+	core/theme.c core/config.c core/mote_snprintf.c core/regex.c core/dirlist.c core/app.c \
+	core/keymap.c
 
 ansi-check: $(CORE_ANSI) plat/platform.h
 	@mkdir -p build/ansi
@@ -66,14 +67,14 @@ build/test_core: test/test_core.c $(CORE_TEST) plat/platform.h | build
 		-Wno-overlength-strings -Icore -Iplat -O0 -g -o $@ test/test_core.c $(CORE_TEST)
 
 CORE_EDTEST = core/buffer.c core/utf8.c core/undo.c core/mote_snprintf.c core/regex.c core/dirlist.c core/hl.c \
-	core/editor.c core/theme.c core/config.c
+	core/editor.c core/theme.c core/config.c core/keymap.c
 build/test_editor_keys: test/test_editor_keys.c $(CORE_EDTEST) plat/platform.h | build
 	$(CC) -std=c89 -Wall -Wextra -Wno-unused-parameter \
 		-Icore -Iplat -O0 -g -o $@ test/test_editor_keys.c $(CORE_EDTEST)
 
-build/test_console_esc: test/test_console_esc.c overlay/console/console.c core/utf8.c plat/platform.h | build
+build/test_console_esc: test/test_console_esc.c overlay/console/console.c core/utf8.c core/keymap.c plat/platform.h | build
 	$(CC) -std=c99 -Wall -Wextra -D_DEFAULT_SOURCE -Icore -Iplat -DMOTE_TEST_CONSOLE_ESC -O0 -g \
-		-o $@ test/test_console_esc.c overlay/console/console.c core/utf8.c
+		-o $@ test/test_console_esc.c overlay/console/console.c core/utf8.c core/keymap.c
 
 smoke: ansi-check test
 	@sh scripts/smoke.sh

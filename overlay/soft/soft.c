@@ -2,19 +2,23 @@
 #include "soft.h"
 #include "utf8.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "font8x16.inc"
 #include "font_cyr8x16.inc"
 
+#define SOFT_MAX_SCALE 3
+#define SOFT_MAX_DIM 4096
+
 mote_bool soft_resize(SoftFb *fb, int w, int h) {
   mote_u32 *n;
   size_t sz;
   if (w < 1) w = 1;
   if (h < 1) h = 1;
-  if (w > 4096) w = 4096;
-  if (h > 4096) h = 4096;
+  if (w > SOFT_MAX_DIM) w = SOFT_MAX_DIM;
+  if (h > SOFT_MAX_DIM) h = SOFT_MAX_DIM;
   if (fb->px && fb->w == w && fb->h == h) return MOTE_TRUE;
   sz = (size_t)w * (size_t)h;
   n = (mote_u32 *)realloc(fb->px, sz * sizeof(mote_u32));
@@ -33,15 +37,14 @@ void soft_free(SoftFb *fb) {
   fb->w = fb->h = 0;
 }
 
+/* The bitmap font only scales by whole multiples of 16px, so round toward the
+   request: Ctrl+= from 16 asks for 17 and must land on 32, not back on 16. */
 void soft_set_font_px(SoftFb *fb, int px) {
-  int sc;
-  if (px < 8) px = 8;
-  if (px > 48) px = 48;
-  sc = (px + 8) / 16;
+  int sc = px > fb->font_px ? (px + SOFT_FONT_H - 1) / SOFT_FONT_H : px / SOFT_FONT_H;
   if (sc < 1) sc = 1;
-  if (sc > 3) sc = 3;
+  if (sc > SOFT_MAX_SCALE) sc = SOFT_MAX_SCALE;
   fb->scale = sc;
-  fb->font_px = sc * 16;
+  fb->font_px = sc * SOFT_FONT_H;
 }
 
 int soft_font_w(const SoftFb *fb) { return SOFT_FONT_W * (fb->scale > 0 ? fb->scale : 1); }
@@ -149,4 +152,24 @@ void soft_blit_caret(SoftFb *fb) {
     if (py < 0 || py >= fb->h) continue;
     fb->px[(size_t)py * (size_t)fb->w + (size_t)x] ^= 0x00FFFFFF;
   }
+}
+
+void soft_dump_once(const SoftFb *fb) {
+  static int dumped;
+  const char *path = getenv("MOTE_DUMP_FB");
+  FILE *f;
+  size_t i, n = (size_t)fb->w * (size_t)fb->h;
+  if (dumped || !path || !fb->px) return;
+  dumped = 1;
+  f = fopen(path, "wb");
+  if (!f) return;
+  fprintf(f, "P6\n%d %d\n255\n", fb->w, fb->h);
+  for (i = 0; i < n; i++) {
+    unsigned char rgb[3];
+    rgb[0] = (unsigned char)(fb->px[i] >> 16);
+    rgb[1] = (unsigned char)(fb->px[i] >> 8);
+    rgb[2] = (unsigned char)fb->px[i];
+    fwrite(rgb, 1, 3, f);
+  }
+  fclose(f);
 }

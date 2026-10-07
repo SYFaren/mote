@@ -1,5 +1,6 @@
 /* mote overlay/x11 */
 #include "platform.h"
+#include "keymap.h"
 #include "common.h"
 #include "utf8.h"
 
@@ -40,8 +41,8 @@ static void load_font(Plat *p, int px) {
   XFontStruct *nf = NULL;
   int tries[] = {0, -1, 1, -2, 2, -3, 3, 4, -4};
   int i;
-  if (px < 8) px = 8;
-  if (px > 48) px = 48;
+  if (px < MOTE_FONT_MIN) px = MOTE_FONT_MIN;
+  if (px > MOTE_FONT_MAX) px = MOTE_FONT_MAX;
   for (i = 0; i < (int)(sizeof tries / sizeof tries[0]); i++) {
     int sz = px + tries[i];
     if (sz < 8) continue;
@@ -462,79 +463,34 @@ char *plat_clipboard_get(Plat *p, size_t *out_len) {
   return clip_read_property(p, p->clipboard, out_len);
 }
 
-static void map_key(KeySym ks, unsigned state, PlatEvent *ev) {
-  mote_bool ctrl = (state & ControlMask) != 0;
-  mote_bool shift = (state & ShiftMask) != 0;
-  mote_bool alt = (state & Mod1Mask) != 0;
-  KeySym lower = ks;
-  if (ks >= XK_A && ks <= XK_Z) lower = ks + 32;
+/* ASCII for a keysym as the shared keymap sees it (keypad folded in). */
+static int ks_char(KeySym ks) {
+  switch (ks) {
+  case XK_KP_Add: return '+';
+  case XK_KP_Subtract: return '-';
+  case XK_KP_0: return '0';
+  case XK_Tab:
+  case XK_ISO_Left_Tab: return '\t';
+  case XK_Return:
+  case XK_KP_Enter: return '\r';
+  default: return ks >= 0x20 && ks < 0x7f ? (int)ks : 0;
+  }
+}
+
+static void map_key(XKeyEvent *xk, KeySym ks, PlatEvent *ev) {
+  mote_bool ctrl = (xk->state & ControlMask) != 0;
+  mote_bool shift = (xk->state & ShiftMask) != 0;
+  mote_bool alt = (xk->state & Mod1Mask) != 0;
+  int ch = ks_char(ks);
+  /* non-Latin layout: take the key's first-group (Latin) symbol for shortcuts */
+  if (!ch && (ctrl || alt)) ch = ks_char(XLookupKeysym(xk, 0));
   ev->type = PE_KEY;
   ev->ctrl = ctrl;
   ev->shift = shift;
-  ev->key = PK_NONE;
-  if (alt && !ctrl) {
-    if (lower == XK_c) { ev->key = PK_FINDCASE; return; }
-    if (lower == XK_w) { ev->key = PK_FINDWORD; return; }
-    if (lower == XK_s) { ev->key = PK_SAVEAS; return; }
-    if (lower == XK_r) { ev->key = PK_READONLY; return; }
-    if (lower == XK_k) { ev->key = PK_DELLINE; return; }
-    if (lower == XK_e) { ev->key = PK_EOL; return; }
-    if (lower == XK_h) { ev->key = PK_HELP; return; }
-    if (lower == XK_n) { ev->key = PK_NEXTDOC; return; }
-    if (lower == XK_p) { ev->key = PK_PREVDOC; return; }
-    if (lower == XK_m) { ev->key = PK_BOOKMARK_SET; return; }
-    if (lower == XK_j) { ev->key = PK_BOOKMARK; return; }
-  }
-  if (ctrl) {
-    switch (lower) {
-    case XK_s: ev->key = shift ? PK_SAVEAS : PK_SAVE; return;
-    case XK_o: ev->key = PK_OPEN; return;
-    case XK_q: ev->key = PK_QUIT; return;
-    case XK_z: ev->key = PK_UNDO; return;
-    case XK_y: ev->key = PK_REDO; return;
-    case XK_f: ev->key = PK_FIND; return;
-    case XK_x: ev->key = PK_CUT; return;
-    case XK_c: ev->key = PK_COPY; return;
-    case XK_v: ev->key = PK_PASTE; return;
-    case XK_a: ev->key = PK_SELALL; return;
-    case XK_h: ev->key = PK_HELP; return;
-    case XK_t: ev->key = PK_THEME; return;
-    case XK_g: ev->key = PK_GOTO; return;
-    case XK_r: ev->key = shift ? PK_READONLY : PK_REPLACE; return;
-    case XK_w: ev->key = shift ? PK_CLOSEDOC : PK_WRAP; return;
-    case XK_d: ev->key = PK_DUPLINE; return;
-    case XK_k: if (shift) { ev->key = PK_DELLINE; return; } break;
-    case XK_n: ev->key = PK_NEWDOC; return;
-    case XK_m:
-      if (shift) {
-        ev->key = PK_BOOKMARK_SET;
-        return;
-      }
-      ev->key = PK_BOOKMARK;
-      return;
-    case XK_j:
-      ev->key = PK_BOOKMARK;
-      return;
-    case XK_p: ev->key = shift ? PK_BOOKMARK_SET : PK_QUICKOPEN; return;
-    case XK_e: ev->key = shift ? PK_EOL : PK_RECENT; return;
-    case XK_slash:
-    case XK_question: ev->key = PK_COMMENT; return;
-    case XK_bracketright: ev->key = PK_BRACKET; return;
-    case XK_backslash: if (shift) { ev->key = PK_BRACKET; return; } break;
-    case XK_equal:
-    case XK_plus:
-    case XK_KP_Add: ev->key = PK_ZOOMIN; return;
-    case XK_minus:
-    case XK_KP_Subtract: ev->key = PK_ZOOMOUT; return;
-    case XK_0:
-    case XK_KP_0: ev->key = PK_ZOOMRESET; return;
-    case XK_Tab:
-    case XK_ISO_Left_Tab:
-      ev->key = shift ? PK_PREVDOC : PK_NEXTDOC;
-      return;
-    default: break;
-    }
-  }
+  if (alt && !ctrl && ch) ev->key = key_alt(ch);
+  else if (ctrl && ch) ev->key = key_ctrl(ch, shift);
+  else ev->key = PK_NONE;
+  if (ev->key != PK_NONE) return;
   switch (ks) {
   case XK_Left: ev->key = PK_LEFT; break;
   case XK_Right: ev->key = PK_RIGHT; break;
@@ -547,33 +503,15 @@ static void map_key(KeySym ks, unsigned state, PlatEvent *ev) {
   case XK_BackSpace: ev->key = PK_BACKSPACE; break;
   case XK_Delete: ev->key = PK_DELETE; break;
   case XK_Return:
-  case XK_KP_Enter:
-    if (ctrl && shift) {
-      ev->key = PK_BOOKMARK_SET;
-      return;
-    }
-    if (ctrl) {
-      ev->key = PK_BOOKMARK;
-      return;
-    }
-    ev->key = PK_ENTER;
-    break;
+  case XK_KP_Enter: ev->key = PK_ENTER; break;
   case XK_Escape: ev->key = PK_ESCAPE; break;
   case XK_Tab:
   case XK_ISO_Left_Tab: ev->key = PK_TAB; break;
-  case XK_F1: ev->key = PK_F1; break;
-  case XK_F2: ev->key = shift ? PK_PREVDOC : PK_NEXTDOC; break;
-  case XK_F3: ev->key = shift ? PK_FINDPREV : PK_FINDNEXT; break;
-  case XK_F4:
-    if (ctrl) ev->key = PK_CLOSEDOC;
-    else ev->type = PE_NONE;
+  default:
+    if (ks >= XK_F1 && ks <= XK_F12) ev->key = key_fn((int)(ks - XK_F1) + 1, ctrl, shift);
     break;
-  case XK_F5: ev->key = PK_RELOAD; break;
-  case XK_F7: ev->key = PK_WS; break;
-  case XK_F8: ev->key = PK_BOOKMARK_SET; break;
-  case XK_F9: ev->key = PK_BOOKMARK; break;
-  default: ev->type = PE_NONE; break;
   }
+  if (ev->key == PK_NONE) ev->type = PE_NONE;
 }
 
 mote_bool plat_poll(Plat *p, PlatEvent *ev) {
@@ -634,7 +572,7 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
 #endif
         n = XLookupString(&xev.xkey, buf, (int)sizeof buf, &ks, NULL);
       if (n < 0) n = 0;
-      map_key(ks, xev.xkey.state, ev);
+      map_key(&xev.xkey, ks, ev);
       if (ev->type == PE_KEY) return MOTE_TRUE;
       if (n > 0 && !(xev.xkey.state & ControlMask) &&
           (unsigned char)buf[0] >= 32) {

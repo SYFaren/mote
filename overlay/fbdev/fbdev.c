@@ -1,7 +1,8 @@
 /* mote overlay/fbdev — Linux /dev/fb0 software framebuffer */
 #include "platform.h"
 #include "soft.h"
-#include "soft_keys.h"
+#include "../evq.h"
+#include "keymap.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -29,65 +30,42 @@ struct Plat {
   mote_bool raw;
   char *clip;
   size_t clip_n;
-  PlatEvent q[128];
-  int qn;
+  EvQueue q;
   mote_bool ctrl, shift, alt, quit;
 };
 
-static void qpush(Plat *p, PlatEvent *e) {
-  if (p->qn < (int)(sizeof p->q / sizeof p->q[0])) p->q[p->qn++] = *e;
-}
-static mote_bool qpop(Plat *p, PlatEvent *e) {
-  if (p->qn <= 0) return MOTE_FALSE;
-  *e = p->q[0];
-  p->qn--;
-  memmove(p->q, p->q + 1, (size_t)p->qn * sizeof p->q[0]);
-  return MOTE_TRUE;
-}
 static void key_nav(Plat *p, PlatKey k) {
-  PlatEvent e;
-  memset(&e, 0, sizeof e);
-  e.type = PE_KEY;
-  e.key = k;
-  e.ctrl = p->ctrl;
-  e.shift = p->shift;
-  qpush(p, &e);
+  evq_key(&p->q, k, p->ctrl, p->shift);
 }
 
+#define LONG_BITS (8 * sizeof(long))
+#define NLONGS(n) (((n) + LONG_BITS - 1) / LONG_BITS)
+#define TEST_BIT(arr, b) (((arr)[(b) / LONG_BITS] >> ((b) % LONG_BITS)) & 1UL)
+
+/* First /dev/input/event* that has letter keys. */
 static int open_keyboard(void) {
   DIR *d = opendir("/dev/input");
   struct dirent *e;
-  int best = -1;
+  int found = -1;
   if (!d) return -1;
-  while ((e = readdir(d))) {
+  while (found < 0 && (e = readdir(d))) {
     char path[256];
+    unsigned long ev[NLONGS(EV_MAX + 1)], keys[NLONGS(KEY_MAX + 1)];
     int fd;
-    unsigned long bits[(EV_MAX + 1) / (8 * sizeof(long))];
     if (strncmp(e->d_name, "event", 5) != 0) continue;
     snprintf(path, sizeof path, "/dev/input/%s", e->d_name);
     fd = open(path, O_RDONLY | O_NONBLOCK);
     if (fd < 0) continue;
-    memset(bits, 0, sizeof bits);
-    if (ioctl(fd, EVIOCGBIT(0, sizeof bits), bits) < 0) {
+    memset(ev, 0, sizeof ev);
+    memset(keys, 0, sizeof keys);
+    if (ioctl(fd, EVIOCGBIT(0, sizeof ev), ev) >= 0 && TEST_BIT(ev, EV_KEY) &&
+        ioctl(fd, EVIOCGBIT(EV_KEY, sizeof keys), keys) >= 0 && TEST_BIT(keys, KEY_A))
+      found = fd;
+    else
       close(fd);
-      continue;
-    }
-    if (bits[EV_KEY / (8 * sizeof(long))] & (1UL << (EV_KEY % (8 * sizeof(long))))) {
-      /* prefer keyboards: check KEY_A */
-      unsigned long kbits[(KEY_MAX + 1) / (8 * sizeof(long))];
-      memset(kbits, 0, sizeof kbits);
-      if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof kbits), kbits) == 0) {
-        if (kbits[KEY_A / (8 * sizeof(long))] & (1UL << (KEY_A % (8 * sizeof(long))))) {
-          if (best >= 0) close(best);
-          best = fd;
-          continue;
-        }
-      }
-    }
-    close(fd);
   }
   closedir(d);
-  return best;
+  return found;
 }
 
 static void tty_raw(Plat *p) {
@@ -96,136 +74,88 @@ static void tty_raw(Plat *p) {
   if (tcgetattr(STDIN_FILENO, &p->saved) != 0) return;
   t = p->saved;
   cfmakeraw(&t);
+  t.c_cc[VMIN] = 0; /* plat_poll drains stdin and must not block */
+  t.c_cc[VTIME] = 0;
   tcsetattr(STDIN_FILENO, TCSANOW, &t);
   p->raw = MOTE_TRUE;
 }
 
-static void map_linux_key(Plat *p, int code, int value) {
-  if (code == KEY_LEFTCTRL || code == KEY_RIGHTCTRL) {
-    p->ctrl = value != 0;
-    return;
-  }
-  if (code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT) {
-    p->shift = value != 0;
-    return;
-  }
-  if (code == KEY_LEFTALT || code == KEY_RIGHTALT) {
-    p->alt = value != 0;
-    return;
-  }
-  if (value != 1) return; /* press only */
+/* US layout indexed by evdev code (KEY_1 = 2 ... KEY_SPACE = 57); evdev
+   numbers keys in keyboard-row order, not alphabetically. */
+static const char US_LO[] = "\0\0" "1234567890-=" "\0\0" "qwertyuiop[]" "\0\0"
+                            "asdfghjkl;'`" "\0\\" "zxcvbnm,./" "\0*\0 ";
+static const char US_HI[] = "\0\0" "!@#$%^&*()_+" "\0\0" "QWERTYUIOP{}" "\0\0"
+                            "ASDFGHJKL:\"~" "\0|" "ZXCVBNM<>?" "\0*\0 ";
 
-  if (p->ctrl || p->alt) {
-    PlatKey pk = PK_NONE;
-    if (code >= KEY_A && code <= KEY_Z)
-      pk = soft_ctrl_letter('A' + (code - KEY_A), p->shift, p->alt);
-    else if (code == KEY_EQUAL)
-      pk = PK_ZOOMIN;
-    else if (code == KEY_MINUS)
-      pk = PK_ZOOMOUT;
-    else if (code == KEY_0)
-      pk = PK_ZOOMRESET;
-    else if (code == KEY_RIGHTBRACE)
-      pk = PK_BRACKET;
-    else if (code == KEY_SLASH)
-      pk = PK_COMMENT;
-    else if (code == KEY_TAB)
-      pk = p->shift ? PK_PREVDOC : PK_NEXTDOC;
-    if (pk != PK_NONE) {
-      key_nav(p, pk);
-      return;
-    }
-  }
-
+static int us_char(int code, mote_bool shift) {
   switch (code) {
-  case KEY_LEFT: key_nav(p, PK_LEFT); return;
-  case KEY_RIGHT: key_nav(p, PK_RIGHT); return;
-  case KEY_UP: key_nav(p, PK_UP); return;
-  case KEY_DOWN: key_nav(p, PK_DOWN); return;
-  case KEY_HOME: key_nav(p, PK_HOME); return;
-  case KEY_END: key_nav(p, PK_END); return;
-  case KEY_PAGEUP: key_nav(p, PK_PGUP); return;
-  case KEY_PAGEDOWN: key_nav(p, PK_PGDN); return;
-  case KEY_BACKSPACE: key_nav(p, PK_BACKSPACE); return;
-  case KEY_DELETE: key_nav(p, PK_DELETE); return;
+  case KEY_TAB: return '\t';
   case KEY_ENTER:
-    if (p->ctrl && p->shift) key_nav(p, PK_BOOKMARK_SET);
-    else if (p->ctrl) key_nav(p, PK_BOOKMARK);
-    else key_nav(p, PK_ENTER);
-    return;
-  case KEY_ESC: key_nav(p, PK_ESCAPE); return;
-  case KEY_TAB: key_nav(p, PK_TAB); return;
-  case KEY_F1: key_nav(p, PK_F1); return;
-  case KEY_F2: key_nav(p, p->shift ? PK_PREVDOC : PK_NEXTDOC); return;
-  case KEY_F3: key_nav(p, p->shift ? PK_FINDPREV : PK_FINDNEXT); return;
-  case KEY_F4:
-    if (p->ctrl) key_nav(p, PK_CLOSEDOC);
-    return;
-  case KEY_F5: key_nav(p, PK_RELOAD); return;
-  case KEY_F7: key_nav(p, PK_WS); return;
-  case KEY_F8: key_nav(p, PK_BOOKMARK_SET); return;
-  case KEY_F9: key_nav(p, PK_BOOKMARK); return;
-  case KEY_Q:
-    if (p->ctrl) {
-      key_nav(p, PK_QUIT);
-      return;
-    }
-    break;
+  case KEY_KPENTER: return '\r';
+  case KEY_KPPLUS: return '+';
+  case KEY_KPMINUS: return '-';
+  case KEY_KP0: return '0';
   default: break;
   }
+  if (code < 0 || code >= (int)sizeof US_LO - 1) return 0;
+  return shift ? US_HI[code] : US_LO[code];
+}
 
-  if (p->ctrl || p->alt) return;
-  /* crude US layout text */
-  {
-    static const char *row = "abcdefghijklmnopqrstuvwxyz";
-    PlatEvent e;
-    char ch = 0;
-    if (code >= KEY_A && code <= KEY_Z) {
-      ch = row[code - KEY_A];
-      if (p->shift) ch = (char)(ch - 'a' + 'A');
-    } else if (code == KEY_SPACE)
-      ch = ' ';
-    else if (code == KEY_1)
-      ch = p->shift ? '!' : '1';
-    else if (code == KEY_2)
-      ch = p->shift ? '@' : '2';
-    else if (code == KEY_3)
-      ch = p->shift ? '#' : '3';
-    else if (code == KEY_4)
-      ch = p->shift ? '$' : '4';
-    else if (code == KEY_5)
-      ch = p->shift ? '%' : '5';
-    else if (code == KEY_6)
-      ch = p->shift ? '^' : '6';
-    else if (code == KEY_7)
-      ch = p->shift ? '&' : '7';
-    else if (code == KEY_8)
-      ch = p->shift ? '*' : '8';
-    else if (code == KEY_9)
-      ch = p->shift ? '(' : '9';
-    else if (code == KEY_0)
-      ch = p->shift ? ')' : '0';
-    else if (code == KEY_MINUS)
-      ch = p->shift ? '_' : '-';
-    else if (code == KEY_EQUAL)
-      ch = p->shift ? '+' : '=';
-    else if (code == KEY_SEMICOLON)
-      ch = p->shift ? ':' : ';';
-    else if (code == KEY_APOSTROPHE)
-      ch = p->shift ? '"' : '\'';
-    else if (code == KEY_COMMA)
-      ch = p->shift ? '<' : ',';
-    else if (code == KEY_DOT)
-      ch = p->shift ? '>' : '.';
-    else if (code == KEY_SLASH)
-      ch = p->shift ? '?' : '/';
-    if (ch) {
-      memset(&e, 0, sizeof e);
-      e.type = PE_TEXT;
-      e.text[0] = ch;
-      e.text_len = 1;
-      qpush(p, &e);
-    }
+static int fn_number(int code) {
+  if (code >= KEY_F1 && code <= KEY_F10) return code - KEY_F1 + 1;
+  if (code == KEY_F11) return 11;
+  if (code == KEY_F12) return 12;
+  return 0;
+}
+
+static PlatKey nav_key(int code) {
+  switch (code) {
+  case KEY_LEFT: return PK_LEFT;
+  case KEY_RIGHT: return PK_RIGHT;
+  case KEY_UP: return PK_UP;
+  case KEY_DOWN: return PK_DOWN;
+  case KEY_HOME: return PK_HOME;
+  case KEY_END: return PK_END;
+  case KEY_PAGEUP: return PK_PGUP;
+  case KEY_PAGEDOWN: return PK_PGDN;
+  case KEY_BACKSPACE: return PK_BACKSPACE;
+  case KEY_DELETE: return PK_DELETE;
+  case KEY_ENTER:
+  case KEY_KPENTER: return PK_ENTER;
+  case KEY_ESC: return PK_ESCAPE;
+  case KEY_TAB: return PK_TAB;
+  default: return PK_NONE;
+  }
+}
+
+/* value: 0 release, 1 press, 2 autorepeat */
+static void map_linux_key(Plat *p, int code, int value) {
+  PlatKey pk = PK_NONE;
+  int ch;
+  switch (code) {
+  case KEY_LEFTCTRL:
+  case KEY_RIGHTCTRL: p->ctrl = value != 0; return;
+  case KEY_LEFTSHIFT:
+  case KEY_RIGHTSHIFT: p->shift = value != 0; return;
+  case KEY_LEFTALT:
+  case KEY_RIGHTALT: p->alt = value != 0; return;
+  default: break;
+  }
+  if (value == 0) return;
+  ch = us_char(code, MOTE_FALSE);
+  if (p->alt && !p->ctrl && ch) pk = key_alt(ch);
+  else if (p->ctrl && ch) pk = key_ctrl(ch, p->shift);
+  if (pk == PK_NONE) pk = nav_key(code);
+  if (pk == PK_NONE && fn_number(code)) pk = key_fn(fn_number(code), p->ctrl, p->shift);
+  if (pk != PK_NONE) {
+    key_nav(p, pk);
+    return;
+  }
+  ch = us_char(code, p->shift);
+  if (!p->ctrl && !p->alt && ch >= ' ') {
+    char c = (char)ch;
+    evq_text(&p->q, &c, 1);
+    evq_flush_text(&p->q);
   }
 }
 
@@ -238,7 +168,7 @@ Plat *plat_create(const char *title, int w, int h) {
   if (!p) return NULL;
   p->fb_fd = -1;
   p->ev_fd = -1;
-  soft_set_font_px(&p->fb, 16);
+  soft_set_font_px(&p->fb, MOTE_FONT_PX);
   if (!soft_resize(&p->fb, w, h)) {
     free(p);
     return NULL;
@@ -274,12 +204,7 @@ Plat *plat_create(const char *title, int w, int h) {
   if (p->ky < 0) p->ky = 0;
   p->ev_fd = open_keyboard();
   tty_raw(p);
-  {
-    PlatEvent e;
-    memset(&e, 0, sizeof e);
-    e.type = PE_EXPOSE;
-    qpush(p, &e);
-  }
+  evq_type(&p->q, PE_EXPOSE);
   return p;
 }
 
@@ -297,7 +222,7 @@ void plat_destroy(Plat *p) {
 void plat_wait(Plat *p) {
   struct pollfd pf[2];
   int n = 0;
-  if (p->qn > 0) return;
+  if (p->q.n > 0) return;
   if (p->ev_fd >= 0) {
     pf[n].fd = p->ev_fd;
     pf[n].events = POLLIN;
@@ -312,28 +237,24 @@ void plat_wait(Plat *p) {
 }
 
 mote_bool plat_poll(Plat *p, PlatEvent *ev) {
-  if (qpop(p, ev)) return MOTE_TRUE;
+  if (evq_pop(&p->q, ev)) return MOTE_TRUE;
   if (p->ev_fd >= 0) {
     struct input_event ie;
     while (read(p->ev_fd, &ie, sizeof ie) == (ssize_t)sizeof ie) {
       if (ie.type == EV_KEY) map_linux_key(p, ie.code, ie.value);
     }
   }
-  /* stdin escape for quit when no evdev */
+  /* The VT still queues every key we read from evdev: drain it. Without a
+     keyboard device it is the only input, good for Esc and Ctrl+C / Ctrl+Q. */
   if (isatty(STDIN_FILENO)) {
     unsigned char c;
     while (read(STDIN_FILENO, &c, 1) == 1) {
-      if (c == 3 || c == 'q') { /* Ctrl-C / q */
-        p->quit = MOTE_TRUE;
-        break;
-      }
-      if (c == 0x1b) {
-        key_nav(p, PK_ESCAPE);
-        break;
-      }
+      if (p->ev_fd >= 0) continue;
+      if (c == 3 || c == 17) p->quit = MOTE_TRUE;
+      else if (c == 0x1b) key_nav(p, PK_ESCAPE);
     }
   }
-  if (qpop(p, ev)) return MOTE_TRUE;
+  if (evq_pop(&p->q, ev)) return MOTE_TRUE;
   if (p->quit) {
     ev->type = PE_QUIT;
     return MOTE_TRUE;

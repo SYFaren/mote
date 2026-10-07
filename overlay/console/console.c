@@ -1,7 +1,9 @@
 /* mote overlay/console — compact ANSI truecolor TTY (C99) */
 #include "platform.h"
 #include "common.h"
+#include "keymap.h"
 #include "utf8.h"
+#include "../evq.h"
 
 #include <poll.h>
 #include <signal.h>
@@ -23,12 +25,15 @@
 #endif
 #endif
 
+#define MAX_COLS 512
+#define MAX_ROWS 256
+
 typedef struct {
   mote_u32 cp, fg, bg;
 } Cell;
 
 struct Plat {
-  int cols, rows, font_px, caret_x, caret_y, in_n, q_n, text_n;
+  int cols, rows, font_px, caret_x, caret_y, in_n;
   mote_bool caret_on, raw, paste, utf8, hw_caret;
   int color_mode; /* 0=16 1=256 2=truecolor */
   mote_bool geom_locked;
@@ -38,12 +43,11 @@ struct Plat {
   size_t clip_n;
   struct termios saved;
   char inbuf[64];
-  char text_acc[32];
   unsigned char utf8_hold[4];
   int utf8_hold_n;
   int kbmode_saved;
   mote_bool kbmode_set;
-  PlatEvent q[256];
+  EvQueue q;
 };
 
 static volatile sig_atomic_t g_winch;
@@ -54,13 +58,17 @@ static void on_winch(int s) {
 
 static int idx(Plat *p, int x, int y) { return y * p->cols + x; }
 
+static void clamp_size(int *cols, int *rows) {
+  if (*cols < 1) *cols = 1;
+  if (*rows < 1) *rows = 1;
+  if (*cols > MAX_COLS) *cols = MAX_COLS;
+  if (*rows > MAX_ROWS) *rows = MAX_ROWS;
+}
+
 static mote_bool resize(Plat *p, int cols, int rows) {
   Cell *c, *prev;
   size_t n;
-  if (cols < 1) cols = 1;
-  if (rows < 1) rows = 1;
-  if (cols > 512) cols = 512;
-  if (rows > 256) rows = 256;
+  clamp_size(&cols, &rows);
   n = (size_t)cols * (size_t)rows;
   c = (Cell *)calloc(n, sizeof(Cell));
   prev = (Cell *)calloc(n, sizeof(Cell));
@@ -185,273 +193,135 @@ static void sgr_bg(Plat *p, mote_u32 rgb) {
   }
 }
 
-static void qpush(Plat *p, PlatEvent *e) {
-  if (p->q_n < (int)(sizeof p->q / sizeof p->q[0])) p->q[p->q_n++] = *e;
-}
-
-static mote_bool qpop(Plat *p, PlatEvent *e) {
-  if (p->q_n <= 0) return MOTE_FALSE;
-  *e = p->q[0];
-  p->q_n--;
-  memmove(p->q, p->q + 1, (size_t)p->q_n * sizeof p->q[0]);
-  return MOTE_TRUE;
-}
-
-static void key(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
-  PlatEvent e;
-  memset(&e, 0, sizeof e);
-  e.type = PE_KEY;
-  e.key = k;
-  e.ctrl = ctrl;
-  e.shift = shift;
-  qpush(p, &e);
-}
-
-static void text1(Plat *p, const char *s, int n) {
-  PlatEvent e;
-  memset(&e, 0, sizeof e);
-  e.type = PE_TEXT;
-  if (n > (int)sizeof e.text) n = (int)sizeof e.text;
-  if (n <= 0) return;
-  memcpy(e.text, s, (size_t)n);
-  e.text_len = n;
-  qpush(p, &e);
-}
-
-static void text_flush(Plat *p) {
-  if (p->text_n <= 0) return;
-  text1(p, p->text_acc, p->text_n);
-  p->text_n = 0;
-}
-
-static void text_add(Plat *p, const char *s, int n) {
-  int i;
-  for (i = 0; i < n; i++) {
-    if (p->text_n >= (int)sizeof p->text_acc) text_flush(p);
-    p->text_acc[p->text_n++] = s[i];
-  }
-}
-
-static void key_flush(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
-  text_flush(p);
-  key(p, k, ctrl, shift);
-}
-
-static void ctrl_key(Plat *p, int c, mote_bool shift) {
-  char lo = (char)c;
-  PlatKey k = PK_NONE;
-  if (lo >= 'A' && lo <= 'Z') lo = (char)(lo - 'A' + 'a');
-  switch (lo) {
-  case 's': k = shift ? PK_SAVEAS : PK_SAVE; break;
-  case 'o': k = PK_OPEN; break;
-  case 'q': k = PK_QUIT; break;
-  case 'z': k = PK_UNDO; break;
-  case 'y': k = PK_REDO; break;
-  case 'f': k = PK_FIND; break;
-  case 'g': k = PK_GOTO; break;
-  case 'r': k = shift ? PK_READONLY : PK_REPLACE; break;
-  case 'x': k = PK_CUT; break;
-  case 'c': k = PK_COPY; break;
-  case 'v': k = PK_PASTE; break;
-  case 'a': k = PK_SELALL; break;
-  case 'h': k = PK_HELP; break;
-  case 't': k = PK_THEME; break;
-  case 'w': k = shift ? PK_CLOSEDOC : PK_WRAP; break;
-  case 'd': k = PK_DUPLINE; break;
-  case 'n': k = PK_NEWDOC; break;
-  case 'e': k = shift ? PK_EOL : PK_RECENT; break;
-  case 'k':
-    if (shift) k = PK_DELLINE;
-    break;
-  case 'b':
-    if (shift) k = PK_BOOKMARK_SET;
-    else k = PK_BOOKMARK;
-    break;
-  case 'p': k = shift ? PK_BOOKMARK_SET : PK_QUICKOPEN; break;
-  case '=':
-  case '+': k = PK_ZOOMIN; break;
-  case '-': k = PK_ZOOMOUT; break;
-  case '0': k = PK_ZOOMRESET; break;
-  case ']':
-  case '\\': k = PK_BRACKET; break;
-  default: break;
-  }
-  if (k != PK_NONE) key_flush(p, k, MOTE_TRUE, shift);
-}
-
-static void alt_letter(Plat *p, char ch) {
-  char up = ch;
-  PlatKey ak = PK_NONE;
-  if (up >= 'a' && up <= 'z') up = (char)(up - 'a' + 'A');
-  if (up == 'H') ak = PK_HELP;
-  else if (up == 'C') ak = PK_FINDCASE;
-  else if (up == 'W') ak = PK_FINDWORD;
-  else if (up == 'S') ak = PK_SAVEAS;
-  else if (up == 'R') ak = PK_READONLY;
-  else if (up == 'K') ak = PK_DELLINE;
-  else if (up == 'E') ak = PK_EOL;
-  else if (up == 'N') ak = PK_NEXTDOC;
-  else if (up == 'P') ak = PK_PREVDOC;
-  else if (up == 'J') ak = PK_BOOKMARK;
-  else if (up == 'B') ak = PK_BOOKMARK_SET;
-  else if (up == 'M') ak = PK_BOOKMARK_SET;
-  if (ak != PK_NONE) key_flush(p, ak, MOTE_FALSE, MOTE_FALSE);
-  else text_add(p, &ch, 1);
-}
-
-static int finish_esc(Plat *p) {
-  char *b = p->inbuf;
-  int n = p->in_n;
-  PlatKey k = PK_NONE;
-  mote_bool shift = MOTE_FALSE, ctrl = MOTE_FALSE;
-  int code, j;
-
-  if (n < 2) return 0;
-
-  /* SS3: ESC O P/Q/R/S = F1–F4 (xterm / many GUI terms) */
-  if (b[1] == 'O') {
-    if (n < 3) return 0;
-    if (b[2] == 'P') k = PK_F1;
-    else if (b[2] == 'Q') k = PK_NEXTDOC; /* F2 */
-    else if (b[2] == 'R') k = PK_FINDNEXT; /* F3 */
-    else if (b[2] == 'S') k = PK_FINDPREV; /* F4 / often Shift-F3 sibling */
-    else if (b[2] == 'H') k = PK_HOME;
-    else if (b[2] == 'F') k = PK_END;
-    p->in_n = 0;
-    if (k != PK_NONE) key_flush(p, k, MOTE_FALSE, MOTE_FALSE);
-    return 1;
-  }
-
-  if (b[1] != '[') {
-    /* ESC + char → Alt+char */
-    p->in_n = 0;
-    if (n == 2) alt_letter(p, b[1]);
-    return 1;
-  }
-
-  /* Linux VT F1–F5: ESC [ [ A–E  (must run before treating '[' as CSI final) */
-  if (n >= 3 && b[2] == '[') {
-    if (n < 4) return 0;
-    p->in_n = 0;
-    switch (b[3]) {
-    case 'A': k = PK_F1; break;
-    case 'B': k = PK_NEXTDOC; break;  /* F2 */
-    case 'C': k = PK_FINDNEXT; break; /* F3 */
-    case 'D': k = PK_CLOSEDOC; break; /* F4 */
-    case 'E': k = PK_RELOAD; break;   /* F5 */
-    default: break;
-    }
-    if (k != PK_NONE) key_flush(p, k, MOTE_FALSE, MOTE_FALSE);
-    return 1;
-  }
-
-  /* CSI: ESC [ … final */
-  if (n < 3) return 0;
-  if (b[n - 1] < 0x40 || b[n - 1] > 0x7e) return 0;
-
-  for (j = 2; j < n - 1; j++) {
-    if (b[j] == ';' && j + 1 < n - 1) {
-      int mod = b[j + 1] - '0';
-      if (mod >= 2) {
-        if (mod == 2 || mod == 6 || mod == 4 || mod == 8) shift = MOTE_TRUE;
-        if (mod == 5 || mod == 6 || mod == 7 || mod == 8) ctrl = MOTE_TRUE;
-      }
-    }
-  }
-
-  switch (b[n - 1]) {
-  case 'A': k = PK_UP; break;
-  case 'B': k = PK_DOWN; break;
-  case 'C': k = PK_RIGHT; break;
-  case 'D': k = PK_LEFT; break;
-  case 'H': k = PK_HOME; break;
-  case 'F': k = PK_END; break;
-  case 'Z': k = PK_TAB; shift = MOTE_TRUE; break;
-  case '~':
-  case 'u':
-    {
-      int parts[8], np = 0, v = 0;
-      for (j = 2; j < n - 1; j++) {
-        if (b[j] == ';') {
-          if (np < 8) parts[np++] = v;
-          v = 0;
-        } else if (b[j] >= '0' && b[j] <= '9')
-          v = v * 10 + (b[j] - '0');
-      }
-      if (np < 8) parts[np++] = v;
-      if (np >= 3 && parts[0] == 27 && b[n - 1] == '~') {
-        int mod = parts[1], ch = parts[2];
-        mote_bool sh = (mod == 1 || mod == 3 || mod == 5 || mod == 7);
-        mote_bool ct = (mod == 4 || mod == 5 || mod == 6 || mod == 7);
-        if (ct && !sh && (ch == 109 || ch == 77 || ch == 13)) {
-          key_flush(p, PK_BOOKMARK, MOTE_TRUE, MOTE_FALSE);
-          p->in_n = 0;
-          return 1;
-        }
-        if (ct && sh && (ch == 109 || ch == 77 || ch == 13)) {
-          key_flush(p, PK_BOOKMARK_SET, MOTE_TRUE, MOTE_TRUE);
-          p->in_n = 0;
-          return 1;
-        }
-        if (ct && sh && (ch == 106 || ch == 74)) {
-          key_flush(p, PK_BOOKMARK, MOTE_TRUE, MOTE_TRUE);
-          p->in_n = 0;
-          return 1;
-        }
-        if (ch == 9) {
-          mote_bool ct2 = (mod == 5 || mod == 6 || mod == 7 || mod == 8);
-          mote_bool sh2 = (mod == 2 || mod == 4 || mod == 6 || mod == 8);
-          if (ct2)
-            key_flush(p, sh2 ? PK_PREVDOC : PK_NEXTDOC, MOTE_TRUE, sh2);
-          else
-            key_flush(p, PK_TAB, MOTE_FALSE, sh2);
-          p->in_n = 0;
-          return 1;
-        }
-      }
-      code = 0;
-      if (np > 0)
-        code = (b[n - 1] == 'u') ? parts[0] : parts[np - 1];
-    }
-    if (code == 200) {
-      p->paste = MOTE_TRUE;
-      p->in_n = 0;
-      return 1;
-    }
-    if (code == 201) {
-      p->paste = MOTE_FALSE;
-      text_flush(p);
-      p->in_n = 0;
-      return 1;
-    }
-    if (code == 1 || code == 7) k = PK_HOME;
-    else if (code == 4 || code == 8) k = PK_END;
-    else if (code == 3) k = PK_DELETE;
-    else if (code == 5) k = PK_PGUP;
-    else if (code == 6) k = PK_PGDN;
-    else if (code == 11) k = PK_F1;
-    else if (code == 12) k = shift ? PK_PREVDOC : PK_NEXTDOC; /* F2 */
-    else if (code == 13) k = shift ? PK_FINDPREV : PK_FINDNEXT; /* F3 */
-    else if (code == 14) k = shift ? PK_FINDPREV : PK_CLOSEDOC; /* F4 / S-F3 */
-    else if (code == 15) k = PK_RELOAD; /* F5 */
-    else if (code == 17) k = PK_WS;          /* F6 */
-    else if (code == 18) k = PK_WS;          /* F7 */
-    else if (code == 19) k = PK_BOOKMARK_SET; /* F8 */
-    else if (code == 20) k = PK_BOOKMARK;     /* F9 */
-    else if (code == 21 || code == 23 || code == 24) k = PK_F1;
-    break;
-  default:
-    break;
-  }
-  p->in_n = 0;
-  if (k != PK_NONE) key_flush(p, k, ctrl, shift);
-  return 1;
-}
-
 static void text_utf8_cp(Plat *p, mote_u32 cp) {
   char u[4];
   int n = utf8_encode(cp, u);
-  if (n > 0) text_add(p, u, n);
+  if (n > 0) evq_text(&p->q, u, n);
+}
+
+static void emit(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
+  if (k != PK_NONE) evq_key(&p->q, k, ctrl, shift);
+}
+
+/* C0 byte typed with Ctrl (Tab/Enter/Backspace/Esc are handled before).
+   Terminals send Ctrl+/ as 0x1f, which would otherwise read as Ctrl+_. */
+static void ctrl_byte(Plat *p, unsigned char c) {
+  emit(p, key_ctrl(c == 0x1f ? '/' : c | 0x40, MOTE_FALSE), MOTE_TRUE, MOTE_FALSE);
+}
+
+static void alt_char(Plat *p, char ch) {
+  PlatKey k = key_alt(ch);
+  if (k != PK_NONE) evq_key(&p->q, k, MOTE_FALSE, MOTE_FALSE);
+  else if ((unsigned char)ch >= 32) evq_text(&p->q, &ch, 1);
+}
+
+/* Terminals rarely report Ctrl+F4, so plain F4 closes the file; desktop
+   terminals often grab F1, so F10-F12 open help too. */
+static void fkey(Plat *p, int n, mote_bool ctrl, mote_bool shift) {
+  if (n >= 10) n = 1;
+  emit(p, key_fn(n, ctrl || n == 4, shift), ctrl, shift);
+}
+
+/* A key reported as codepoint + modifiers (modifyOtherKeys, CSI u). */
+static void modified_char(Plat *p, int ch, mote_bool shift, mote_bool alt, mote_bool ctrl) {
+  if (ctrl) emit(p, key_ctrl(ch, shift), MOTE_TRUE, shift);
+  else if (ch == '\r') evq_key(&p->q, PK_ENTER, MOTE_FALSE, shift);
+  else if (ch == '\t') evq_key(&p->q, PK_TAB, MOTE_FALSE, shift);
+  else if (ch == 0x7f || ch == 0x08) evq_key(&p->q, PK_BACKSPACE, MOTE_FALSE, shift);
+  else if (ch == 0x1b) evq_key(&p->q, PK_ESCAPE, MOTE_FALSE, MOTE_FALSE);
+  else if (alt && ch < 0x80) alt_char(p, (char)ch);
+  else if (ch >= 32) text_utf8_cp(p, (mote_u32)ch);
+}
+
+/* CSI <code> [; <mod>] ~ */
+static void tilde_key(Plat *p, const int *par, int np, mote_bool shift, mote_bool alt,
+                      mote_bool ctrl) {
+  int code = par[0];
+  PlatKey k = PK_NONE;
+  switch (code) {
+  case 27: /* xterm modifyOtherKeys: CSI 27 ; mod ; char ~ */
+    if (np >= 3) modified_char(p, par[2], shift, alt, ctrl);
+    return;
+  case 200: p->paste = MOTE_TRUE; return;
+  case 201:
+    p->paste = MOTE_FALSE;
+    evq_flush_text(&p->q);
+    return;
+  case 1: case 7: k = PK_HOME; break;
+  case 4: case 8: k = PK_END; break;
+  case 3: k = PK_DELETE; break;
+  case 5: k = PK_PGUP; break;
+  case 6: k = PK_PGDN; break;
+  default:
+    if (code >= 11 && code <= 15) fkey(p, code - 10, ctrl, shift);
+    else if (code >= 17 && code <= 21) fkey(p, code - 11, ctrl, shift);
+    else if (code == 23 || code == 24) fkey(p, code - 12, ctrl, shift);
+    return;
+  }
+  evq_key(&p->q, k, ctrl, shift);
+}
+
+/* Decode p->inbuf (starts with ESC). Returns 0 while the sequence is incomplete. */
+static int finish_esc(Plat *p) {
+  const char *b = p->inbuf;
+  int n = p->in_n, par[8], np = 0, v = 0, mod, j;
+  mote_bool shift, alt, ctrl;
+  char fin;
+
+  if (n < 2) return 0;
+  if (b[1] == 'O') { /* SS3: F1-F4, Home/End */
+    if (n < 3) return 0;
+    p->in_n = 0;
+    if (b[2] >= 'P' && b[2] <= 'S') fkey(p, b[2] - 'P' + 1, MOTE_FALSE, MOTE_FALSE);
+    else if (b[2] == 'H') evq_key(&p->q, PK_HOME, MOTE_FALSE, MOTE_FALSE);
+    else if (b[2] == 'F') evq_key(&p->q, PK_END, MOTE_FALSE, MOTE_FALSE);
+    return 1;
+  }
+  if (b[1] != '[') { /* ESC + char = Alt+char */
+    p->in_n = 0;
+    alt_char(p, b[1]);
+    return 1;
+  }
+  if (n < 3) return 0;
+  if (b[2] == '[') { /* Linux VT F1-F5: ESC [ [ A..E */
+    if (n < 4) return 0;
+    p->in_n = 0;
+    if (b[3] >= 'A' && b[3] <= 'E') fkey(p, b[3] - 'A' + 1, MOTE_FALSE, MOTE_FALSE);
+    return 1;
+  }
+  fin = b[n - 1];
+  if (fin < 0x40 || fin > 0x7e) return 0;
+  p->in_n = 0;
+
+  for (j = 2; j < n - 1; j++) {
+    if (b[j] == ';') {
+      if (np < 7) par[np++] = v;
+      v = 0;
+    } else if (b[j] >= '0' && b[j] <= '9') {
+      v = v * 10 + (b[j] - '0');
+    }
+  }
+  par[np++] = v;
+  /* xterm modifier parameter: 1 + (1 Shift | 2 Alt | 4 Ctrl) */
+  mod = np >= 2 && par[1] > 1 ? par[1] - 1 : 0;
+  shift = (mod & 1) != 0;
+  alt = (mod & 2) != 0;
+  ctrl = (mod & 4) != 0;
+
+  switch (fin) {
+  case 'A': evq_key(&p->q, PK_UP, ctrl, shift); break;
+  case 'B': evq_key(&p->q, PK_DOWN, ctrl, shift); break;
+  case 'C': evq_key(&p->q, PK_RIGHT, ctrl, shift); break;
+  case 'D': evq_key(&p->q, PK_LEFT, ctrl, shift); break;
+  case 'H': evq_key(&p->q, PK_HOME, ctrl, shift); break;
+  case 'F': evq_key(&p->q, PK_END, ctrl, shift); break;
+  case 'P': case 'Q': case 'R': case 'S': fkey(p, fin - 'P' + 1, ctrl, shift); break;
+  case 'Z': evq_key(&p->q, PK_TAB, MOTE_FALSE, MOTE_TRUE); break;
+  case 'u': modified_char(p, par[0], shift, alt, ctrl); break;
+  case '~': tilde_key(p, par, np, shift, alt, ctrl); break;
+  default: break;
+  }
+  return 1;
 }
 
 static int utf8_seq_len(unsigned char c) {
@@ -471,7 +341,7 @@ static void feed_utf8_byte(Plat *p, unsigned char c) {
     need = utf8_seq_len(c);
     if (need <= 1) {
       if (c < 0x80)
-        text_add(p, (const char *)&c, 1);
+        evq_text(&p->q, (const char *)&c, 1);
       else if (!p->utf8) {
         /* Legacy VT: single high byte (KOI8/CP866) → Unicode via Latin-1 slot */
         text_utf8_cp(p, (mote_u32)c);
@@ -527,11 +397,8 @@ static void ingest(Plat *p, const unsigned char *buf, int n) {
       }
       {
         unsigned char ch = (unsigned char)(c & 0x7f);
-        if (ch >= 1 && ch <= 26) {
-          ctrl_key(p, 'a' + (int)ch - 1, MOTE_FALSE);
-        } else if (ch >= 32 && ch != 0x7f) {
-          alt_letter(p, (char)ch);
-        }
+        if (ch >= 1 && ch <= 26) ctrl_byte(p, ch);
+        else if (ch >= 32 && ch != 0x7f) alt_char(p, (char)ch);
       }
       continue;
     }
@@ -542,34 +409,29 @@ static void ingest(Plat *p, const unsigned char *buf, int n) {
     }
 
     if (c == 0x7f || c == 0x08) {
-      key_flush(p, PK_BACKSPACE, MOTE_FALSE, MOTE_FALSE);
+      evq_key(&p->q, PK_BACKSPACE, MOTE_FALSE, MOTE_FALSE);
       continue;
     }
     if (c == '\r' || c == '\n') {
       if (burst) {
         if (c == '\r' && i + 1 < n && buf[i + 1] == '\n') i++;
-        text_add(p, "\n", 1);
+        evq_text(&p->q, "\n", 1);
       } else {
-        key_flush(p, PK_ENTER, MOTE_FALSE, MOTE_FALSE);
+        evq_key(&p->q, PK_ENTER, MOTE_FALSE, MOTE_FALSE);
       }
       continue;
     }
     if (c == '\t') {
       if (burst)
-        text_add(p, "\t", 1);
+        evq_text(&p->q, "\t", 1);
       else
-        key_flush(p, PK_TAB, MOTE_FALSE, MOTE_FALSE);
+        evq_key(&p->q, PK_TAB, MOTE_FALSE, MOTE_FALSE);
       continue;
     }
-    if (c >= 1 && c <= 26) {
-      ctrl_key(p, 'a' + (int)c - 1, MOTE_FALSE);
+    if (c < 32) {
+      ctrl_byte(p, c);
       continue;
     }
-    if (c == 31) {
-      key_flush(p, PK_COMMENT, MOTE_TRUE, MOTE_FALSE);
-      continue;
-    }
-    if (c < 32) continue;
 
     feed_utf8_byte(p, c);
   }
@@ -589,26 +451,18 @@ static void flush_esc(Plat *p) {
     return;
   }
   p->in_n = 0;
-  key_flush(p, PK_ESCAPE, MOTE_FALSE, MOTE_FALSE);
+  evq_key(&p->q, PK_ESCAPE, MOTE_FALSE, MOTE_FALSE);
 }
 
 static void check_winch(Plat *p) {
   int cols, rows;
-  PlatEvent e;
-  if (p->geom_locked) {
-    g_winch = 0;
-    return;
-  }
-  /* Always re-read size: some TTYs miss SIGWINCH; also fixes first-paint races. */
   g_winch = 0;
+  if (p->geom_locked) return;
+  /* Always re-read size: some TTYs miss SIGWINCH; also fixes first-paint races. */
   tty_size(&cols, &rows);
-  if (cols < 1) cols = 1;
-  if (rows < 1) rows = 1;
-  if (cols == p->cols && rows == p->rows) return;
-  if (!resize(p, cols, rows)) return;
-  memset(&e, 0, sizeof e);
-  e.type = PE_EXPOSE;
-  qpush(p, &e);
+  clamp_size(&cols, &rows); /* else a huge terminal resizes on every poll */
+  if ((cols != p->cols || rows != p->rows) && resize(p, cols, rows))
+    evq_type(&p->q, PE_EXPOSE);
 }
 
 Plat *plat_create(const char *title, int w, int h) {
@@ -623,7 +477,7 @@ Plat *plat_create(const char *title, int w, int h) {
   /* Soft invert caret drifts on Linux VT when UTF-8 width mismatches; use HW. */
   p->hw_caret = (p->color_mode == 0) ? MOTE_TRUE : MOTE_FALSE;
   tty_size(&cols, &rows);
-  if (w >= 40 && w <= 512 && h >= 10 && h <= 256) {
+  if (w >= 40 && w <= MAX_COLS && h >= 10 && h <= MAX_ROWS) {
     cols = w;
     rows = h;
     p->geom_locked = MOTE_TRUE;
@@ -709,7 +563,7 @@ void plat_wait(Plat *p) {
   struct pollfd fd;
   flush_esc(p);
   check_winch(p);
-  if (p->q_n > 0) return;
+  if (p->q.n > 0) return;
   fd.fd = STDIN_FILENO;
   fd.events = POLLIN;
   (void)poll(&fd, 1, -1);
@@ -721,17 +575,17 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
   memset(ev, 0, sizeof *ev);
   check_winch(p);
   flush_esc(p);
-  if (qpop(p, ev)) return MOTE_TRUE;
+  if (evq_pop(&p->q, ev)) return MOTE_TRUE;
   /* leave room in queue so a big paste is not silently dropped */
-  if (p->q_n > (int)(sizeof p->q / sizeof p->q[0]) - 64) {
-    text_flush(p);
-    return qpop(p, ev);
+  if (p->q.n > (int)(sizeof p->q / sizeof p->q.ev[0]) - 64) {
+    evq_flush_text(&p->q);
+    return evq_pop(&p->q, ev);
   }
   n = read(STDIN_FILENO, buf, sizeof buf);
   if (n > 0) ingest(p, buf, (int)n);
   flush_esc(p);
-  text_flush(p);
-  return qpop(p, ev);
+  evq_flush_text(&p->q);
+  return evq_pop(&p->q, ev);
 }
 
 void plat_get_size(Plat *p, int *w, int *h) {
@@ -747,8 +601,8 @@ int plat_font_h(Plat *p) {
   return 1;
 }
 void plat_set_font_px(Plat *p, int px) {
-  if (px < 8) px = 8;
-  if (px > 48) px = 48;
+  if (px < MOTE_FONT_MIN) px = MOTE_FONT_MIN;
+  if (px > MOTE_FONT_MAX) px = MOTE_FONT_MAX;
   p->font_px = px;
 }
 int plat_font_px(Plat *p) { return p->font_px; }
@@ -974,15 +828,16 @@ mote_bool plat_clipboard_set(Plat *p, const char *s, size_t n) {
 
 #ifdef MOTE_TEST_CONSOLE_ESC
 void console_test_feed(Plat *p, const unsigned char *buf, int n) {
+  p->q.n = 0;
   ingest(p, buf, n);
   flush_esc(p);
-  text_flush(p);
+  evq_flush_text(&p->q);
 }
 
 PlatKey console_test_last_key(const Plat *p) {
   int i;
-  for (i = p->q_n - 1; i >= 0; i--)
-    if (p->q[i].type == PE_KEY) return p->q[i].key;
+  for (i = p->q.n - 1; i >= 0; i--)
+    if (p->q.ev[i].type == PE_KEY) return p->q.ev[i].key;
   return PK_NONE;
 }
 #endif

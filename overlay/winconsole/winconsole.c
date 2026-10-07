@@ -1,6 +1,9 @@
 /* mote overlay/winconsole — Windows ConHost / VT console (MinGW) */
 #include "platform.h"
+#include "common.h"
 #include "utf8.h"
+#include "../evq.h"
+#include "winutil.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -15,21 +18,18 @@ typedef struct {
 
 struct Plat {
   HANDLE hin, hout;
-  int cols, rows, font_px, caret_x, caret_y, q_n, text_n;
+  int cols, rows, font_px, caret_x, caret_y;
   mote_bool caret_on, vt;
   DWORD in_mode_saved, out_mode_saved;
   UINT in_cp_saved, out_cp_saved;
   Cell *cells;
   Cell *prev; /* last painted (caret applied) — skip unchanged rows */
   CHAR_INFO *outbuf;
-  char *clip;
-  size_t clip_n;
   char *vtbuf;
   size_t vtbuf_n, vtbuf_cap;
   wchar_t *wtmp;
   int wtmp_cap;
-  char text_acc[32];
-  PlatEvent q[256];
+  EvQueue q;
 };
 
 /* Palette tuned so nearest-16 mapping keeps syntax HL distinct. */
@@ -115,14 +115,19 @@ static void sync_host_window(Plat *p) {
 
 static int idx(Plat *p, int x, int y) { return y * p->cols + x; }
 
+/* The editor needs at least 40x10; the host window may be smaller. */
+static void clamp_size(int *cols, int *rows) {
+  if (*cols < 40) *cols = 40;
+  if (*rows < 10) *rows = 10;
+  if (*cols > 300) *cols = 300;
+  if (*rows > 120) *rows = 120;
+}
+
 static mote_bool resize(Plat *p, int cols, int rows) {
   Cell *c, *prev;
   CHAR_INFO *o;
   size_t n, i;
-  if (cols < 40) cols = 40;
-  if (rows < 10) rows = 10;
-  if (cols > 300) cols = 300;
-  if (rows > 120) rows = 120;
+  clamp_size(&cols, &rows);
   n = (size_t)cols * (size_t)rows;
   c = (Cell *)calloc(n, sizeof(Cell));
   prev = (Cell *)calloc(n, sizeof(Cell));
@@ -151,172 +156,23 @@ static mote_bool resize(Plat *p, int cols, int rows) {
   return MOTE_TRUE;
 }
 
-static void qpush(Plat *p, PlatEvent *e) {
-  if (p->q_n < (int)(sizeof p->q / sizeof p->q[0])) p->q[p->q_n++] = *e;
-}
-
-static mote_bool qpop(Plat *p, PlatEvent *e) {
-  if (p->q_n <= 0) return MOTE_FALSE;
-  *e = p->q[0];
-  p->q_n--;
-  memmove(p->q, p->q + 1, (size_t)p->q_n * sizeof p->q[0]);
-  return MOTE_TRUE;
-}
-
-static void key(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
-  PlatEvent e;
-  memset(&e, 0, sizeof e);
-  e.type = PE_KEY;
-  e.key = k;
-  e.ctrl = ctrl;
-  e.shift = shift;
-  qpush(p, &e);
-}
-
-static void text1(Plat *p, const char *s, int n) {
-  PlatEvent e;
-  memset(&e, 0, sizeof e);
-  e.type = PE_TEXT;
-  if (n > (int)sizeof e.text) n = (int)sizeof e.text;
-  if (n <= 0) return;
-  memcpy(e.text, s, (size_t)n);
-  e.text_len = n;
-  qpush(p, &e);
-}
-
-static void text_flush(Plat *p) {
-  if (p->text_n <= 0) return;
-  text1(p, p->text_acc, p->text_n);
-  p->text_n = 0;
-}
-
-static void text_add(Plat *p, const char *s, int n) {
-  int i;
-  for (i = 0; i < n; i++) {
-    if (p->text_n >= (int)sizeof p->text_acc) text_flush(p);
-    p->text_acc[p->text_n++] = s[i];
-  }
-}
-
-static void key_flush(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
-  text_flush(p);
-  key(p, k, ctrl, shift);
-}
-
-static void ctrl_letter(Plat *p, int vk, mote_bool shift) {
-  PlatKey k = PK_NONE;
-  switch (vk) {
-  case 'S': k = shift ? PK_SAVEAS : PK_SAVE; break;
-  case 'O': k = PK_OPEN; break;
-  case 'Q': k = PK_QUIT; break;
-  case 'Z': k = PK_UNDO; break;
-  case 'Y': k = PK_REDO; break;
-  case 'F': k = PK_FIND; break;
-  case 'G': k = PK_GOTO; break;
-  case 'R': k = shift ? PK_READONLY : PK_REPLACE; break;
-  case 'X': k = PK_CUT; break;
-  case 'C': k = PK_COPY; break;
-  case 'V': k = PK_PASTE; break;
-  case 'A': k = PK_SELALL; break;
-  case 'T': k = PK_THEME; break;
-  case 'W': k = shift ? PK_CLOSEDOC : PK_WRAP; break;
-  case 'D': k = PK_DUPLINE; break;
-  case 'N': k = PK_NEWDOC; break;
-  case 'E': k = shift ? PK_EOL : PK_RECENT; break;
-  case 'K':
-    if (shift) k = PK_DELLINE;
-    break;
-  case 'P': k = shift ? PK_BOOKMARK_SET : PK_QUICKOPEN; break;
-  case VK_OEM_2: k = PK_COMMENT; break;
-  case VK_OEM_PLUS: k = PK_ZOOMIN; break;
-  case VK_OEM_MINUS: k = PK_ZOOMOUT; break;
-  case '0': k = PK_ZOOMRESET; break;
-  case VK_OEM_6: k = PK_BRACKET; break;
-  default: break;
-  }
-  if (k != PK_NONE) key_flush(p, k, MOTE_TRUE, shift);
-}
-
-static void ingest_key_event(Plat *p, KEY_EVENT_RECORD *ke) {
-  mote_bool ctrl, shift, alt;
-  WORD vk;
-  WCHAR ch;
+static void ingest_key_event(Plat *p, const KEY_EVENT_RECORD *ke) {
+  DWORD st = ke->dwControlKeyState;
+  mote_bool ctrl = (st & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+  mote_bool shift = (st & SHIFT_PRESSED) != 0;
+  mote_bool alt = (st & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0;
+  WCHAR ch = ke->uChar.UnicodeChar;
+  PlatKey k;
+  WORD i;
   if (!ke->bKeyDown) return;
-  ctrl = (ke->dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
-  shift = (ke->dwControlKeyState & SHIFT_PRESSED) != 0;
-  alt = (ke->dwControlKeyState & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0;
-  vk = ke->wVirtualKeyCode;
-  ch = ke->uChar.UnicodeChar;
-
-  if (alt && !ctrl) {
-    PlatKey ak = PK_NONE;
-    if (vk == 'H' || vk == 'h') ak = PK_HELP;
-    else if (vk == 'C' || vk == 'c') ak = PK_FINDCASE;
-    else if (vk == 'W' || vk == 'w') ak = PK_FINDWORD;
-    else if (vk == 'S' || vk == 's') ak = PK_SAVEAS;
-    else if (vk == 'R' || vk == 'r') ak = PK_READONLY;
-    else if (vk == 'K' || vk == 'k') ak = PK_DELLINE;
-    else if (vk == 'E' || vk == 'e') ak = PK_EOL;
-    else if (vk == 'N' || vk == 'n') ak = PK_NEXTDOC;
-    else if (vk == 'P' || vk == 'p') ak = PK_PREVDOC;
-    else if (vk == 'M' || vk == 'm') ak = PK_BOOKMARK_SET;
-    else if (vk == 'J' || vk == 'j') ak = PK_BOOKMARK;
-    if (ak != PK_NONE) {
-      key_flush(p, ak, MOTE_FALSE, MOTE_FALSE);
-      return;
-    }
-  }
-  if (ctrl && vk == VK_TAB) {
-    key_flush(p, shift ? PK_PREVDOC : PK_NEXTDOC, MOTE_TRUE, shift);
-    return;
-  }
-  if (ctrl && vk == VK_F4) {
-    key_flush(p, PK_CLOSEDOC, MOTE_TRUE, MOTE_FALSE);
-    return;
-  }
-  if (ctrl) {
-    ctrl_letter(p, (int)vk, shift);
-    return;
-  }
-
-  switch (vk) {
-  case VK_LEFT: key_flush(p, PK_LEFT, MOTE_FALSE, shift); return;
-  case VK_RIGHT: key_flush(p, PK_RIGHT, MOTE_FALSE, shift); return;
-  case VK_UP: key_flush(p, PK_UP, MOTE_FALSE, shift); return;
-  case VK_DOWN: key_flush(p, PK_DOWN, MOTE_FALSE, shift); return;
-  case VK_HOME: key_flush(p, PK_HOME, MOTE_FALSE, shift); return;
-  case VK_END: key_flush(p, PK_END, MOTE_FALSE, shift); return;
-  case VK_PRIOR: key_flush(p, PK_PGUP, MOTE_FALSE, shift); return;
-  case VK_NEXT: key_flush(p, PK_PGDN, MOTE_FALSE, shift); return;
-  case VK_BACK: key_flush(p, PK_BACKSPACE, MOTE_FALSE, MOTE_FALSE); return;
-  case VK_DELETE: key_flush(p, PK_DELETE, MOTE_FALSE, MOTE_FALSE); return;
-  case VK_RETURN:
-    if (ctrl && shift) key_flush(p, PK_BOOKMARK_SET, MOTE_TRUE, MOTE_TRUE);
-    else if (ctrl) key_flush(p, PK_BOOKMARK, MOTE_TRUE, MOTE_FALSE);
-    else key_flush(p, PK_ENTER, MOTE_FALSE, MOTE_FALSE);
-    return;
-  case VK_ESCAPE: key_flush(p, PK_ESCAPE, MOTE_FALSE, MOTE_FALSE); return;
-  case VK_TAB: key_flush(p, PK_TAB, MOTE_FALSE, shift); return;
-  case VK_F1: key_flush(p, PK_HELP, MOTE_FALSE, MOTE_FALSE); return;
-  case VK_F2: key_flush(p, shift ? PK_PREVDOC : PK_NEXTDOC, MOTE_FALSE, shift); return;
-  case VK_F3: key_flush(p, shift ? PK_FINDPREV : PK_FINDNEXT, MOTE_FALSE, shift); return;
-  case VK_F5: key_flush(p, PK_RELOAD, MOTE_FALSE, MOTE_FALSE); return;
-  case VK_F7: key_flush(p, PK_WS, MOTE_FALSE, MOTE_FALSE); return;
-  case VK_F8: key_flush(p, PK_BOOKMARK_SET, MOTE_FALSE, MOTE_FALSE); return;
-  case VK_F9: key_flush(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE); return;
-  default: break;
-  }
-
-  if (ch >= 32) {
-    char utf[8];
-    int n;
-    /* BMP only for simplicity */
-    if (ch < 128) {
-      char c = (char)ch;
-      text_add(p, &c, 1);
-    } else {
-      n = utf8_encode((mote_u32)ch, utf);
-      if (n > 0) text_add(p, utf, n);
+  k = win_vk_key(ke->wVirtualKeyCode, ctrl, shift, alt);
+  for (i = 0; i < (ke->wRepeatCount ? ke->wRepeatCount : 1); i++) {
+    if (k != PK_NONE) {
+      evq_key(&p->q, k, ctrl, shift);
+    } else if (ch >= 32) { /* BMP only; Ctrl+letter yields a control char here */
+      char utf[4];
+      int n = utf8_encode((mote_u32)ch, utf);
+      if (n > 0) evq_text(&p->q, utf, n);
     }
   }
 }
@@ -327,14 +183,9 @@ static void poll_console_size(Plat *p) {
   if (!GetConsoleScreenBufferInfo(p->hout, &info)) return;
   cols = info.srWindow.Right - info.srWindow.Left + 1;
   rows = info.srWindow.Bottom - info.srWindow.Top + 1;
-  if (cols != p->cols || rows != p->rows) {
-    PlatEvent e;
-    if (resize(p, cols, rows)) {
-      memset(&e, 0, sizeof e);
-      e.type = PE_EXPOSE;
-      qpush(p, &e);
-    }
-  }
+  clamp_size(&cols, &rows); /* else a too-small window resizes on every poll */
+  if ((cols != p->cols || rows != p->rows) && resize(p, cols, rows))
+    evq_type(&p->q, PE_EXPOSE);
 }
 
 static int running_on_wine(void) {
@@ -411,7 +262,7 @@ Plat *plat_create(const char *title, int w, int h) {
   CONSOLE_SCREEN_BUFFER_INFO info;
   p = (Plat *)calloc(1, sizeof *p);
   if (!p) return NULL;
-  p->font_px = 16;
+  p->font_px = MOTE_FONT_PX;
   p->hin = GetStdHandle(STD_INPUT_HANDLE);
   p->hout = GetStdHandle(STD_OUTPUT_HANDLE);
   if (p->hin == INVALID_HANDLE_VALUE || p->hout == INVALID_HANDLE_VALUE) {
@@ -453,11 +304,7 @@ Plat *plat_create(const char *title, int w, int h) {
     SetConsoleMode(p->hout, om);
   }
   if (getenv("MOTE_NO_VT")) p->vt = MOTE_FALSE;
-  if (title && title[0]) {
-    wchar_t wt[128];
-    MultiByteToWideChar(CP_UTF8, 0, title, -1, wt, 128);
-    SetConsoleTitleW(wt);
-  }
+  if (title && title[0]) plat_set_title(p, title);
   if (GetConsoleScreenBufferInfo(p->hout, &info)) {
     cols = info.srWindow.Right - info.srWindow.Left + 1;
     rows = info.srWindow.Bottom - info.srWindow.Top + 1;
@@ -477,7 +324,6 @@ void plat_destroy(Plat *p) {
   SetConsoleMode(p->hout, p->out_mode_saved);
   if (p->in_cp_saved) SetConsoleCP(p->in_cp_saved);
   if (p->out_cp_saved) SetConsoleOutputCP(p->out_cp_saved);
-  free(p->clip);
   free(p->cells);
   free(p->prev);
   free(p->outbuf);
@@ -487,9 +333,9 @@ void plat_destroy(Plat *p) {
 }
 
 void plat_wait(Plat *p) {
-  text_flush(p);
+  evq_flush_text(&p->q);
   poll_console_size(p);
-  if (p->q_n > 0) return;
+  if (p->q.n > 0) return;
   WaitForSingleObject(p->hin, INFINITE);
 }
 
@@ -498,10 +344,10 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
   DWORD n = 0, i;
   memset(ev, 0, sizeof *ev);
   poll_console_size(p);
-  if (qpop(p, ev)) return MOTE_TRUE;
+  if (evq_pop(&p->q, ev)) return MOTE_TRUE;
   if (!PeekConsoleInputW(p->hin, rec, 1, &n) || n == 0) {
-    text_flush(p);
-    return qpop(p, ev);
+    evq_flush_text(&p->q);
+    return evq_pop(&p->q, ev);
   }
   if (!ReadConsoleInputW(p->hin, rec, 32, &n)) return MOTE_FALSE;
   for (i = 0; i < n; i++) {
@@ -510,8 +356,8 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
     else if (rec[i].EventType == WINDOW_BUFFER_SIZE_EVENT)
       poll_console_size(p);
   }
-  text_flush(p);
-  return qpop(p, ev);
+  evq_flush_text(&p->q);
+  return evq_pop(&p->q, ev);
 }
 
 void plat_get_size(Plat *p, int *w, int *h) {
@@ -527,22 +373,13 @@ int plat_font_h(Plat *p) {
   return 1;
 }
 void plat_set_font_px(Plat *p, int px) {
-  if (px < 8) px = 8;
-  if (px > 48) px = 48;
+  if (px < MOTE_FONT_MIN) px = MOTE_FONT_MIN;
+  if (px > MOTE_FONT_MAX) px = MOTE_FONT_MAX;
   p->font_px = px;
 }
 int plat_font_px(Plat *p) { return p->font_px; }
 
 void plat_begin_frame(Plat *p) { (void)p; }
-
-void plat_clear(Plat *p, mote_u32 rgb) {
-  int i, n = p->cols * p->rows;
-  for (i = 0; i < n; i++) {
-    p->cells[i].cp = ' ';
-    p->cells[i].fg = 0xD4D4D4ul;
-    p->cells[i].bg = rgb;
-  }
-}
 
 void plat_fill_rect(Plat *p, int x, int y, int w, int h, mote_u32 rgb) {
   int xi, yi, x1 = x + w, y1 = y + h;
@@ -552,8 +389,15 @@ void plat_fill_rect(Plat *p, int x, int y, int w, int h, mote_u32 rgb) {
   if (x1 > p->cols) x1 = p->cols;
   if (y1 > p->rows) y1 = p->rows;
   for (yi = y; yi < y1; yi++)
-    for (xi = x; xi < x1; xi++) p->cells[idx(p, xi, yi)].bg = rgb;
+    for (xi = x; xi < x1; xi++) { /* blank cell: text under a popup must not show */
+      Cell *c = &p->cells[idx(p, xi, yi)];
+      c->cp = ' ';
+      c->fg = rgb;
+      c->bg = rgb;
+    }
 }
+
+void plat_clear(Plat *p, mote_u32 rgb) { plat_fill_rect(p, 0, 0, p->cols, p->rows, rgb); }
 
 void plat_draw_text(Plat *p, int x, int y, const char *s, int n, mote_u32 rgb) {
   int i = 0, cx = x;
@@ -748,11 +592,11 @@ void plat_end_frame(Plat *p) {
 }
 
 void plat_set_title(Plat *p, const char *title) {
-  wchar_t wt[256];
+  wchar_t *w = win_wide(title);
   (void)p;
-  if (!title) return;
-  MultiByteToWideChar(CP_UTF8, 0, title, -1, wt, 256);
-  SetConsoleTitleW(wt);
+  if (!w) return;
+  SetConsoleTitleW(w);
+  free(w);
 }
 
 mote_bool plat_set_caret(Plat *p, int x, int y, int h, mote_bool on) {
@@ -765,67 +609,39 @@ mote_bool plat_set_caret(Plat *p, int x, int y, int h, mote_bool on) {
 
 char *plat_clipboard_get(Plat *p, size_t *out_len) {
   HANDLE h;
-  wchar_t *w;
-  int n;
-  char *u;
+  const wchar_t *w;
+  char *u = NULL;
   (void)p;
-  if (!OpenClipboard(NULL)) {
-    if (out_len) *out_len = 0;
-    return NULL;
-  }
+  if (out_len) *out_len = 0;
+  if (!OpenClipboard(NULL)) return NULL;
   h = GetClipboardData(CF_UNICODETEXT);
-  if (!h) {
-    CloseClipboard();
-    if (out_len) *out_len = 0;
-    return NULL;
+  w = h ? (const wchar_t *)GlobalLock(h) : NULL;
+  if (w) {
+    u = win_utf8(w);
+    GlobalUnlock(h);
   }
-  w = (wchar_t *)GlobalLock(h);
-  if (!w) {
-    CloseClipboard();
-    return NULL;
-  }
-  n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
-  u = (char *)malloc((size_t)n);
-  if (u) WideCharToMultiByte(CP_UTF8, 0, w, -1, u, n, NULL, NULL);
-  GlobalUnlock(h);
   CloseClipboard();
   if (u && out_len) *out_len = strlen(u);
   return u;
 }
 
 mote_bool plat_clipboard_set(Plat *p, const char *s, size_t n) {
+  int wn = n ? MultiByteToWideChar(CP_UTF8, 0, s, (int)n, NULL, 0) : 0;
   HGLOBAL h;
   wchar_t *w;
-  int wn;
-  char *tmp;
   (void)p;
-  tmp = (char *)malloc(n + 1);
-  if (!tmp) return MOTE_FALSE;
-  memcpy(tmp, s, n);
-  tmp[n] = 0;
-  wn = MultiByteToWideChar(CP_UTF8, 0, tmp, -1, NULL, 0);
-  free(tmp);
-  if (wn <= 0) return MOTE_FALSE;
+  if (n && wn <= 0) return MOTE_FALSE;
   if (!OpenClipboard(NULL)) return MOTE_FALSE;
   EmptyClipboard();
-  h = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)wn * sizeof(wchar_t));
-  if (!h) {
+  h = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)(wn + 1) * sizeof(wchar_t));
+  w = h ? (wchar_t *)GlobalLock(h) : NULL;
+  if (!w) {
+    if (h) GlobalFree(h);
     CloseClipboard();
     return MOTE_FALSE;
   }
-  w = (wchar_t *)GlobalLock(h);
-  tmp = (char *)malloc(n + 1);
-  if (!tmp || !w) {
-    free(tmp);
-    GlobalUnlock(h);
-    GlobalFree(h);
-    CloseClipboard();
-    return MOTE_FALSE;
-  }
-  memcpy(tmp, s, n);
-  tmp[n] = 0;
-  MultiByteToWideChar(CP_UTF8, 0, tmp, -1, w, wn);
-  free(tmp);
+  if (wn) MultiByteToWideChar(CP_UTF8, 0, s, (int)n, w, wn);
+  w[wn] = 0;
   GlobalUnlock(h);
   SetClipboardData(CF_UNICODETEXT, h);
   CloseClipboard();

@@ -5,11 +5,11 @@ ROOT := ../..
 include ../build.mk
 
 include ../core.mk
-OV = main.c winconsole.c ../win32/os.c
+OV = main.c winconsole.c ../win32/os.c ../win32/winutil.c
 SRC = $(CORE) $(OV)
 
-INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat
-CFLAGS = -std=c99 -Wall -Wextra $(INCLUDES) $(MOTE_OPT) -D_WIN32
+INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat -I$(ROOT)/overlay/win32
+CFLAGS = -std=c99 -Wall -Wextra $(INCLUDES) $(MOTE_OPT) -D_WIN32 -municode
 LDFLAGS = -static -static-libgcc -Oz -flto \
 	-Wl,--gc-sections,--as-needed,-s,--strip-all,--exclude-libs,ALL \
 	-luser32 -lkernel32

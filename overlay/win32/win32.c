@@ -2,6 +2,7 @@
 #include "platform.h"
 #include "common.h"
 #include "utf8.h"
+#include "winutil.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -9,6 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+#define QN 64         /* event ring size */
+#define MAX_DIB 16384 /* largest backing bitmap side */
 
 struct Plat {
   HWND hwnd;
@@ -29,7 +33,7 @@ struct Plat {
   unsigned high_surr;
   char *clip_store;
   size_t clip_len;
-  PlatEvent queue[64];
+  PlatEvent queue[QN];
   int qh, qt;
   /* brush cache — avoid CreateSolidBrush per glyph highlight */
   mote_u32 br_rgb[24];
@@ -40,109 +44,10 @@ struct Plat {
 static Plat *g_plat;
 
 static void push_ev(Plat *p, const PlatEvent *e) {
-  int n = (p->qh + 1) % 64;
+  int n = (p->qh + 1) % QN;
   if (n == p->qt) return;
   p->queue[p->qh] = *e;
   p->qh = n;
-}
-
-static void map_vk(WPARAM vk, mote_bool ctrl, mote_bool shift, mote_bool alt, PlatEvent *ev) {
-  ev->type = PE_KEY;
-  ev->ctrl = ctrl;
-  ev->shift = shift;
-  ev->key = PK_NONE;
-  if (alt && !ctrl) {
-    if (vk == 'C') { ev->key = PK_FINDCASE; return; }
-    if (vk == 'W') { ev->key = PK_FINDWORD; return; }
-    if (vk == 'S') { ev->key = PK_SAVEAS; return; }
-    if (vk == 'R') { ev->key = PK_READONLY; return; }
-    if (vk == 'K') { ev->key = PK_DELLINE; return; }
-    if (vk == 'E') { ev->key = PK_EOL; return; }
-    if (vk == 'H') { ev->key = PK_HELP; return; }
-    if (vk == 'N') { ev->key = PK_NEXTDOC; return; }
-    if (vk == 'P') { ev->key = PK_PREVDOC; return; }
-    if (vk == 'M') { ev->key = PK_BOOKMARK_SET; return; }
-    if (vk == 'J') { ev->key = PK_BOOKMARK; return; }
-  }
-  if (ctrl) {
-    switch (vk) {
-    case 'S': ev->key = shift ? PK_SAVEAS : PK_SAVE; return;
-    case 'O': ev->key = PK_OPEN; return;
-    case 'Q': ev->key = PK_QUIT; return;
-    case 'Z': ev->key = PK_UNDO; return;
-    case 'Y': ev->key = PK_REDO; return;
-    case 'F': ev->key = PK_FIND; return;
-    case 'X': ev->key = PK_CUT; return;
-    case 'C': ev->key = PK_COPY; return;
-    case 'V': ev->key = PK_PASTE; return;
-    case 'A': ev->key = PK_SELALL; return;
-    case 'H': ev->key = PK_HELP; return;
-    case 'T': ev->key = PK_THEME; return;
-    case 'G': ev->key = PK_GOTO; return;
-    case 'R': ev->key = shift ? PK_READONLY : PK_REPLACE; return;
-    case 'W': ev->key = shift ? PK_CLOSEDOC : PK_WRAP; return;
-    case 'D': ev->key = PK_DUPLINE; return;
-    case 'K': if (shift) { ev->key = PK_DELLINE; return; } break;
-    case 'N': ev->key = PK_NEWDOC; return;
-    case 'M':
-      if (shift) {
-        ev->key = PK_BOOKMARK_SET;
-        return;
-      }
-      ev->key = PK_BOOKMARK;
-      return;
-    case 'J':
-      ev->key = PK_BOOKMARK;
-      return;
-    case 'P': ev->key = shift ? PK_BOOKMARK_SET : PK_QUICKOPEN; return;
-    case 'E': ev->key = shift ? PK_EOL : PK_RECENT; return;
-    case VK_OEM_2: ev->key = PK_COMMENT; return;
-    case VK_OEM_6: ev->key = PK_BRACKET; return; /* ] */
-    case VK_OEM_5: if (shift) { ev->key = PK_BRACKET; return; } break; /* \ */
-    case VK_OEM_PLUS:
-    case VK_ADD: ev->key = PK_ZOOMIN; return;
-    case VK_OEM_MINUS:
-    case VK_SUBTRACT: ev->key = PK_ZOOMOUT; return;
-    case '0':
-    case VK_NUMPAD0: ev->key = PK_ZOOMRESET; return;
-    case VK_TAB: ev->key = shift ? PK_PREVDOC : PK_NEXTDOC; return;
-    default: break;
-    }
-  }
-  switch (vk) {
-  case VK_LEFT: ev->key = PK_LEFT; break;
-  case VK_RIGHT: ev->key = PK_RIGHT; break;
-  case VK_UP: ev->key = PK_UP; break;
-  case VK_DOWN: ev->key = PK_DOWN; break;
-  case VK_HOME: ev->key = PK_HOME; break;
-  case VK_END: ev->key = PK_END; break;
-  case VK_PRIOR: ev->key = PK_PGUP; break;
-  case VK_NEXT: ev->key = PK_PGDN; break;
-  case VK_BACK: ev->key = PK_BACKSPACE; break;
-  case VK_DELETE: ev->key = PK_DELETE; break;
-  case VK_RETURN:
-    if (ctrl && shift) {
-      ev->key = PK_BOOKMARK_SET;
-      return;
-    }
-    if (ctrl) {
-      ev->key = PK_BOOKMARK;
-      return;
-    }
-    ev->key = PK_ENTER;
-    break;
-  case VK_ESCAPE: ev->key = PK_ESCAPE; break;
-  case VK_TAB: ev->key = PK_TAB; break;
-  case VK_F1: ev->key = PK_F1; break;
-  case VK_F2: ev->key = shift ? PK_PREVDOC : PK_NEXTDOC; break;
-  case VK_F3: ev->key = shift ? PK_FINDPREV : PK_FINDNEXT; break;
-  case VK_F4: if (ctrl) { ev->key = PK_CLOSEDOC; return; } break;
-  case VK_F5: ev->key = PK_RELOAD; break;
-  case VK_F7: ev->key = PK_WS; break;
-  case VK_F8: ev->key = PK_BOOKMARK_SET; break;
-  case VK_F9: ev->key = PK_BOOKMARK; break;
-  default: ev->type = PE_NONE; break;
-  }
 }
 
 static void remake_dib(Plat *p) {
@@ -165,19 +70,18 @@ static void remake_dib(Plat *p) {
   if (p->dib) p->old_bmp = (HBITMAP)SelectObject(p->hdc_mem, p->dib);
 }
 
-static wchar_t *u8_wide(const char *s) {
-  int n;
-  wchar_t *w;
-  if (!s) s = "";
-  n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
-  if (n <= 0) return NULL;
-  w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
-  if (!w) return NULL;
-  if (!MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n)) {
-    free(w);
-    return NULL;
-  }
-  return w;
+static mote_bool key_down(int vk) { return (GetKeyState(vk) & 0x8000) != 0; }
+
+/* Fixed-pitch font with Cyrillic coverage (stock SYSTEM_FIXED often lacks it). */
+static HFONT make_font(int px) {
+  HFONT f = CreateFontW(-px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+                        FIXED_PITCH | FF_MODERN, L"Consolas");
+  if (!f)
+    f = CreateFontW(-px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+                    FIXED_PITCH | FF_MODERN, L"Courier New");
+  return f;
 }
 
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -197,10 +101,11 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   case WM_SIZE: {
     int nw = LOWORD(lp);
     int nh = HIWORD(lp);
+    if (wp == SIZE_MINIMIZED) return 0; /* keep the real size for the config */
     if (nw < 1) nw = 1;
     if (nh < 1) nh = 1;
-    if (nw > 16384) nw = 16384;
-    if (nh > 16384) nh = 16384;
+    if (nw > MAX_DIB) nw = MAX_DIB;
+    if (nh > MAX_DIB) nh = MAX_DIB;
     p->width = nw;
     p->height = nh;
     remake_dib(p);
@@ -237,19 +142,25 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return 0;
   }
   case WM_SYSKEYDOWN:
-  case WM_KEYDOWN: {
-    mote_bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-    mote_bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-    mote_bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-    map_vk(wp, ctrl, shift, alt, &ev);
-    if (ev.type == PE_KEY) push_ev(p, &ev);
+  case WM_KEYDOWN:
+    ev.ctrl = key_down(VK_CONTROL);
+    ev.shift = key_down(VK_SHIFT);
+    ev.key = win_vk_key((unsigned)wp, ev.ctrl, ev.shift, key_down(VK_MENU));
+    if (ev.key == PK_NONE && msg == WM_SYSKEYDOWN && wp == VK_F4)
+      return DefWindowProcW(hwnd, msg, wp, lp); /* Alt+F4 closes the window */
+    if (ev.key != PK_NONE) {
+      ev.type = PE_KEY;
+      push_ev(p, &ev);
+    }
     return 0;
-  }
+  case WM_SYSCHAR:
+    return 0; /* Alt+letter is handled on key-down; DefWindowProc would beep */
   case WM_CHAR: {
+    /* Ctrl+letter arrives here as a control char (dropped below); AltGr
+       characters arrive with Ctrl down and must still be typed. */
     mote_u32 cp;
     char out[4];
     int n;
-    if (GetKeyState(VK_CONTROL) & 0x8000) return 0;
     if (wp >= 0xD800 && wp <= 0xDBFF) {
       p->high_surr = (unsigned)wp;
       return 0;
@@ -275,7 +186,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     ev.type = PE_MOUSE_DOWN;
     ev.mx = (short)LOWORD(lp);
     ev.my = (short)HIWORD(lp);
-    ev.shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    ev.shift = key_down(VK_SHIFT);
     push_ev(p, &ev);
     return 0;
   case WM_LBUTTONUP:
@@ -287,7 +198,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return 0;
   case WM_MOUSEMOVE:
     if (wp & MK_LBUTTON) {
-      int last = (p->qh + 63) % 64;
+      int last = (p->qh + QN - 1) % QN;
       if (p->qt != p->qh && p->queue[last].type == PE_MOUSE_MOVE) {
         p->queue[last].mx = (short)LOWORD(lp);
         p->queue[last].my = (short)HIWORD(lp);
@@ -343,10 +254,16 @@ Plat *plat_create(const char *title, int w, int h) {
   wc.lpszClassName = L"mote-x";
   wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32513)); /* IDC_IBEAM */
   RegisterClassW(&wc);
-  wtitle = u8_wide(title);
-  p->hwnd = CreateWindowExW(
-      0, L"mote-x", wtitle ? wtitle : L"mote-x", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-      CW_USEDEFAULT, CW_USEDEFAULT, w, h, NULL, NULL, wc.hInstance, NULL);
+  wtitle = win_wide(title);
+  {
+    /* w x h is the client area (what plat_get_size reports and the config saves) */
+    RECT r = {0, 0, w, h};
+    AdjustWindowRectEx(&r, WS_OVERLAPPEDWINDOW, FALSE, 0);
+    p->hwnd = CreateWindowExW(0, L"mote-x", wtitle ? wtitle : L"mote-x",
+                              WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
+                              r.right - r.left, r.bottom - r.top, NULL, NULL, wc.hInstance,
+                              NULL);
+  }
   free(wtitle);
   if (!p->hwnd) {
     free(p);
@@ -356,14 +273,7 @@ Plat *plat_create(const char *title, int w, int h) {
   p->hdc_win = GetDC(p->hwnd);
   p->hdc_mem = CreateCompatibleDC(p->hdc_win);
   p->font_px = MOTE_FONT_PX;
-  /* Fixed font with Cyrillic coverage (stock SYSTEM_FIXED often lacks glyphs). */
-  p->font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                        DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-  if (!p->font)
-    p->font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                          DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Courier New");
+  p->font = make_font(p->font_px);
   if (p->font) {
     p->font_owned = MOTE_TRUE;
   } else {
@@ -422,15 +332,9 @@ void plat_set_font_px(Plat *p, int px) {
   TEXTMETRICW tm;
   HFONT nf;
   if (!p) return;
-  if (px < 8) px = 8;
-  if (px > 48) px = 48;
-  nf = CreateFontW(-px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                   DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                   DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-  if (!nf)
-    nf = CreateFontW(-px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                     DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Courier New");
+  if (px < MOTE_FONT_MIN) px = MOTE_FONT_MIN;
+  if (px > MOTE_FONT_MAX) px = MOTE_FONT_MAX;
+  nf = make_font(px);
   if (!nf) return;
   SelectObject(p->hdc_mem, nf);
   if (p->font_owned && p->font) DeleteObject(p->font);
@@ -444,7 +348,7 @@ void plat_set_font_px(Plat *p, int px) {
   p->caret_h = -1;
 }
 
-int plat_font_px(Plat *p) { return p && p->font_px > 0 ? p->font_px : 15; }
+int plat_font_px(Plat *p) { return p && p->font_px > 0 ? p->font_px : MOTE_FONT_PX; }
 
 void plat_begin_frame(Plat *p) {
   SelectObject(p->hdc_mem, p->font);
@@ -531,7 +435,7 @@ void plat_end_frame(Plat *p) {
 }
 
 void plat_set_title(Plat *p, const char *title) {
-  wchar_t *w = u8_wide(title);
+  wchar_t *w = win_wide(title);
   if (w) {
     SetWindowTextW(p->hwnd, w);
     free(w);
@@ -675,7 +579,7 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
   }
   if (p->qt != p->qh) {
     *ev = p->queue[p->qt];
-    p->qt = (p->qt + 1) % 64;
+    p->qt = (p->qt + 1) % QN;
     return MOTE_TRUE;
   }
   if (p->quit) {

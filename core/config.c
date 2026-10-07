@@ -16,12 +16,12 @@ void cfg_defaults(MoteCfg *c) {
 }
 
 static void clamp_wh(MoteCfg *c) {
-  if (c->win_w < 200) c->win_w = 200;
-  if (c->win_h < 120) c->win_h = 120;
+  if (c->win_w < MOTE_MIN_WIN_W) c->win_w = MOTE_MIN_WIN_W;
+  if (c->win_h < MOTE_MIN_WIN_H) c->win_h = MOTE_MIN_WIN_H;
   if (c->win_w > 8192) c->win_w = 8192;
   if (c->win_h > 8192) c->win_h = 8192;
-  if (c->font_px < 8) c->font_px = 8;
-  if (c->font_px > 48) c->font_px = 48;
+  if (c->font_px < MOTE_FONT_MIN) c->font_px = MOTE_FONT_MIN;
+  if (c->font_px > MOTE_FONT_MAX) c->font_px = MOTE_FONT_MAX;
   if (c->theme_id < 0) c->theme_id = 0;
 }
 

@@ -2,7 +2,9 @@
 #ifndef MOTE_CONFIG_H
 #define MOTE_CONFIG_H
 
-#define MOTE_CFG_RECENT 8
+#include "common.h"
+
+#define MOTE_CFG_RECENT MOTE_RECENT
 
 typedef struct {
   int win_w, win_h;
