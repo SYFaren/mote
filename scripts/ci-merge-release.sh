@@ -23,6 +23,7 @@ for src in "$@"; do
 done
 
 if [ -d "$FLAT" ] && ls "$FLAT/"* >/dev/null 2>&1; then
+  rm -f "$FLAT/SHA256SUMS"
   (cd "$FLAT" && sha256sum * > "$DIST/SHA256SUMS")
   cp -f "$DIST/SHA256SUMS" "$FLAT/SHA256SUMS"
 fi

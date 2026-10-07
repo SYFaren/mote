@@ -204,7 +204,6 @@ jobs:
           overwrite_files: true
           files: |
             dist-release/mote-all-platforms.zip
-            dist-release/SHA256SUMS
             dist-release/flat/*
           body_path: /tmp/release-notes.md
           fail_on_unmatched_files: false
