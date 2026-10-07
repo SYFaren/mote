@@ -299,7 +299,7 @@ int main(void) {
 
   /* --- new feature tests --- */
   {
-    const char *qf_other = "/tmp/mote-qf-other.txt";
+    const char *qf_other = "/tmp/mote-qf-jk-other.txt";
     FILE *tf = fopen(qf_other, "w");
     expect(tf != NULL, "qf fixture");
     if (tf) {
@@ -326,6 +326,30 @@ int main(void) {
     s = doc_str(&ed);
     expect(s && !strstr(s, "//") && strstr(s, "int"), "comment removed");
     free(s);
+    {
+      static const struct {
+        const char *path, *commented;
+      } cases[] = {
+          {"/tmp/mote-c.html", "<!-- int x = 42; -->"},
+          {"/tmp/mote-c.sql", "-- int x = 42;"},
+          {"/tmp/mote-c.css", "/* int x = 42; */"},
+      };
+      size_t i;
+      for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        mote_snprintf(ed.docs[ed.cur].path, sizeof ed.docs[0].path, "%s", cases[i].path);
+        push_key(p, PK_COMMENT, MOTE_FALSE, MOTE_FALSE);
+        drain(&ed, p);
+        s = doc_str(&ed);
+        expect(s && strcmp(s, cases[i].commented) == 0, cases[i].path);
+        free(s);
+        push_key(p, PK_COMMENT, MOTE_FALSE, MOTE_FALSE);
+        drain(&ed, p);
+        s = doc_str(&ed);
+        expect(s && strcmp(s, "int x = 42;") == 0, "uncomment restores line");
+        free(s);
+      }
+      mote_snprintf(ed.docs[ed.cur].path, sizeof ed.docs[0].path, "%s", path2);
+    }
 
     ed.find[0] = 0;
     push_key(p, PK_FIND, MOTE_TRUE, MOTE_FALSE);
@@ -431,12 +455,15 @@ int main(void) {
     push_key(p, PK_QUICKOPEN, MOTE_TRUE, MOTE_FALSE);
     drain(&ed, p);
     expect(ed.mode == MODE_QUICKOPEN, "quickopen mode");
-    push_text(p, "other");
+    push_text(p, "j");
+    push_text(p, "k");
+    push_text(p, "-other");
     drain(&ed, p);
+    expect(strcmp(ed.prompt, "jk-other") == 0, "quickopen filter takes j and k");
     expect(ed.qf_n > 0, "quickopen filter");
     push_key(p, PK_ENTER, MOTE_FALSE, MOTE_FALSE);
     drain(&ed, p);
-    expect(strstr(ed.docs[ed.cur].path, "mote-qf-other") != NULL, "quickopen opened");
+    expect(strstr(ed.docs[ed.cur].path, "mote-qf-jk-other") != NULL, "quickopen opened");
     unlink(qf_other);
   }
 

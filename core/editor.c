@@ -159,7 +159,7 @@ static const char *prompt_bar_prefix(EdMode mode) {
   case MODE_GOTO:
     return "Goto:";
   case MODE_QUICKOPEN:
-    return "Go to file — type filter, j/k Enter:";
+    return "Go to file — type filter, Up/Down Enter:";
   default:
     return "";
   }
@@ -944,12 +944,28 @@ static mote_bool parse_slash_cmd(const char *in, char *pat, size_t patn, char *r
   return MOTE_TRUE;
 }
 
-static const char *comment_prefix(Doc *d) {
+typedef struct {
+  const char *open, *close; /* close == NULL: line comment */
+} CommentStyle;
+
+static CommentStyle comment_style(Doc *d) {
+  static const struct {
+    const char *lang;
+    CommentStyle cs;
+  } styles[] = {
+      {"python", {"#", NULL}},       {"shell", {"#", NULL}},
+      {"yaml", {"#", NULL}},         {"make", {"#", NULL}},
+      {"sql", {"--", NULL}},         {"css", {"/*", "*/"}},
+      {"html/xml", {"<!--", "-->"}}, {"markdown", {"<!--", "-->"}},
+  };
+  CommentStyle def;
   const char *lang = hl_lang_name(hl_select(d->path));
-  if (strcmp(lang, "python") == 0 || strcmp(lang, "shell") == 0 ||
-      strcmp(lang, "yaml") == 0)
-    return "#";
-  return "//";
+  size_t i;
+  for (i = 0; i < sizeof styles / sizeof styles[0]; i++)
+    if (strcmp(lang, styles[i].lang) == 0) return styles[i].cs;
+  def.open = "//";
+  def.close = NULL;
+  return def;
 }
 
 /* Rows covered by the selection, or just the caret row. */
@@ -963,34 +979,87 @@ static void sel_rows(Doc *d, size_t *r0, size_t *r1) {
   pos_to_rc(d, hi > 0 ? hi - 1 : hi, r1, &col);
 }
 
-/* Text of `row` after its indentation; false for blank lines. */
+/* Shift `p` left for `n` bytes deleted at `at`. */
+static size_t pos_after_delete(size_t p, size_t at, size_t n) {
+  if (p <= at) return p;
+  return p - (p - at < n ? p - at : n);
+}
+
+static mote_bool is_blank(char c) { return c == ' ' || c == '\t'; }
+
+/* Text of `row` without its indentation and trailing blanks; false for
+   blank lines. */
 static mote_bool line_body(Doc *d, size_t row, size_t *pos, size_t *end) {
-  size_t p = row_start(d, row);
-  *end = line_end(d, p);
-  while (p < *end && (buf_at(&d->buf, p) == ' ' || buf_at(&d->buf, p) == '\t')) p++;
+  size_t p = row_start(d, row), q = line_end(d, p);
+  while (p < q && is_blank(buf_at(&d->buf, p))) p++;
+  while (q > p && is_blank(buf_at(&d->buf, q - 1))) q--;
   *pos = p;
-  return p < *end;
+  *end = q;
+  return p < q;
+}
+
+static mote_bool is_commented(Doc *d, const CommentStyle *cs, size_t pos, size_t end) {
+  size_t no = strlen(cs->open), nc = cs->close ? strlen(cs->close) : 0;
+  if (end - pos < no + nc || !buf_match(&d->buf, pos, cs->open, no)) return MOTE_FALSE;
+  return !nc || buf_match(&d->buf, end - nc, cs->close, nc);
+}
+
+/* Edits that keep the caret and selection on the same text. Text inserted
+   right at the caret goes before it only when `before_caret`. */
+static void comment_insert(Editor *e, Doc *d, size_t at, const char *s,
+                           mote_bool before_caret) {
+  size_t n = strlen(s);
+  mote_bool eq = before_caret && !has_sel(d);
+  if (!push_insert(e, d, at, s, n, MOTE_FALSE)) return;
+  if (d->caret > at || (eq && d->caret == at)) d->caret += n;
+  if (d->sel_anchor > at || (eq && d->sel_anchor == at)) d->sel_anchor += n;
+}
+
+static void comment_delete(Editor *e, Doc *d, size_t at, size_t n) {
+  if (!push_delete(e, d, at, n)) return;
+  d->caret = pos_after_delete(d->caret, at, n);
+  d->sel_anchor = pos_after_delete(d->sel_anchor, at, n);
+}
+
+/* "open text close" with one space inside each marker. */
+static void comment_line(Editor *e, Doc *d, const CommentStyle *cs, size_t pos,
+                         size_t end) {
+  char mark[8];
+  if (cs->close) {
+    mote_snprintf(mark, sizeof mark, " %s", cs->close);
+    comment_insert(e, d, end, mark, MOTE_FALSE);
+  }
+  mote_snprintf(mark, sizeof mark, "%s ", cs->open);
+  comment_insert(e, d, pos, mark, MOTE_TRUE);
+}
+
+/* Strips the markers and the space next to each, if there is one. */
+static void uncomment_line(Editor *e, Doc *d, const CommentStyle *cs, size_t pos,
+                           size_t end) {
+  size_t no = strlen(cs->open), nc = cs->close ? strlen(cs->close) : 0;
+  if (pos + no < end && buf_at(&d->buf, pos + no) == ' ') no++;
+  if (nc && end - nc > pos + no && buf_at(&d->buf, end - nc - 1) == ' ') nc++;
+  if (nc) comment_delete(e, d, end - nc, nc);
+  comment_delete(e, d, pos, no);
 }
 
 /* Comments every non-blank line in range, or uncomments if all already are. */
 static void toggle_comment(Editor *e, Doc *d) {
-  size_t r0, r1, row, pos, end, n;
-  const char *pfx;
+  CommentStyle cs = comment_style(d);
+  size_t r0, r1, row, pos, end;
   mote_bool any = MOTE_FALSE, all = MOTE_TRUE;
   if (!editable(e, d)) return;
-  pfx = comment_prefix(d);
-  n = strlen(pfx);
   sel_rows(d, &r0, &r1);
   for (row = r0; row <= r1; row++) {
     if (!line_body(d, row, &pos, &end)) continue;
     any = MOTE_TRUE;
-    if (end - pos < n || !buf_match(&d->buf, pos, pfx, n)) all = MOTE_FALSE;
+    if (!is_commented(d, &cs, pos, end)) all = MOTE_FALSE;
   }
   if (!any) return;
   for (row = r0; row <= r1; row++) {
     if (!line_body(d, row, &pos, &end)) continue;
-    if (all) push_delete(e, d, pos, n);
-    else push_insert(e, d, pos, pfx, n, MOTE_FALSE);
+    if (all) uncomment_line(e, d, &cs, pos, end);
+    else comment_line(e, d, &cs, pos, end);
   }
   sync_caret_rc(d);
   ensure_visible(e, d);
@@ -1047,7 +1116,7 @@ static void quickopen_begin(Editor *e, Doc *d) {
   e->qf_pool_n = dirlist_files(e->qf_dir, e->qf_pool, QF_POOL);
   qsort(e->qf_pool, (size_t)e->qf_pool_n, sizeof e->qf_pool[0], cmp_name);
   e->qf_sel = 0;
-  begin_mode(e, MODE_QUICKOPEN, "Go to file — type filter  j/k Enter");
+  begin_mode(e, MODE_QUICKOPEN, "Go to file — type filter  Up/Down Enter");
   quickopen_filter(e);
 }
 
@@ -1144,12 +1213,6 @@ static size_t outdent_width(const Doc *d, size_t pos) {
   if (pos < len && buf_at(&d->buf, pos) == '\t') return 1;
   while (n < 4 && pos + n < len && buf_at(&d->buf, pos + n) == ' ') n++;
   return n;
-}
-
-/* Shift `p` left for `n` bytes deleted at `at`. */
-static size_t pos_after_delete(size_t p, size_t at, size_t n) {
-  if (p <= at) return p;
-  return p - (p - at < n ? p - at : n);
 }
 
 /* Tab / Shift+Tab: indent or outdent every selected line. Without a
@@ -1706,10 +1769,12 @@ static void handle_help(Editor *e, const PlatEvent *ev) {
   mark(e);
 }
 
-/* Up/Down or j/k move a list selection; true if `ev` was one of them. */
-static mote_bool list_nav(Editor *e, const PlatEvent *ev, int *sel, int n) {
+/* Up/Down (and j/k with `letters`) move a list selection; true if `ev`
+   was one of them. */
+static mote_bool list_nav(Editor *e, const PlatEvent *ev, int *sel, int n,
+                          mote_bool letters) {
   int dy;
-  char c = ev->type == PE_TEXT && ev->text_len == 1 ? ev->text[0] : 0;
+  char c = letters && ev->type == PE_TEXT && ev->text_len == 1 ? ev->text[0] : 0;
   if ((ev->type == PE_KEY && ev->key == PK_UP) || c == 'k') dy = -1;
   else if ((ev->type == PE_KEY && ev->key == PK_DOWN) || c == 'j') dy = 1;
   else return MOTE_FALSE;
@@ -1732,7 +1797,7 @@ static void recent_begin(Editor *e) {
 static void handle_recent(Editor *e, const PlatEvent *ev) {
   char path[sizeof e->recent[0]];
   int pick;
-  if (list_nav(e, ev, &e->recent_sel, e->nrecent)) return;
+  if (list_nav(e, ev, &e->recent_sel, e->nrecent, MOTE_TRUE)) return;
   if (ev->type == PE_KEY && ev->key == PK_ESCAPE) {
     leave_mode(e);
     return;
@@ -1752,7 +1817,7 @@ static void handle_recent(Editor *e, const PlatEvent *ev) {
 
 static void handle_quickopen(Editor *e, const PlatEvent *ev) {
   char path[sizeof e->qf_dir + sizeof e->qf_match[0]];
-  if (list_nav(e, ev, &e->qf_sel, e->qf_n)) return;
+  if (list_nav(e, ev, &e->qf_sel, e->qf_n, MOTE_FALSE)) return; /* j/k go to the filter */
   if (ev->type == PE_TEXT) {
     if (prompt_append(e, ev->text, ev->text_len)) quickopen_filter(e);
     return;
