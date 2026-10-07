@@ -8,9 +8,7 @@ DOSCC ?= i586-pc-msdosdjgpp-gcc
 UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..
 
-CORE = $(ROOT)/core/buffer.c $(ROOT)/core/utf8.c $(ROOT)/core/undo.c \
-	$(ROOT)/core/hl.c $(ROOT)/core/editor.c $(ROOT)/core/theme.c \
-	$(ROOT)/core/config.c $(ROOT)/core/mote_snprintf.c $(ROOT)/core/regex.c $(ROOT)/core/dirlist.c
+include ../core.mk
 OV = main.c dos.c os.c
 SRC = $(CORE) $(OV)
 
@@ -28,7 +26,7 @@ LDFLAGS = -Wl,--gc-sections -s
 
 all: build/mote.exe
 
-build/mote.exe: $(SRC) $(ROOT)/plat/platform.h | build
+build/mote.exe: $(SRC) $(CORE_H) | build
 	@command -v $(DOSCC) >/dev/null 2>&1 || { \
 	  echo "DOSCC=$(DOSCC) not found."; \
 	  echo "Install DJGPP cross-gcc (andrewwutw/build-djgpp) and set PATH."; \

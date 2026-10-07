@@ -1,5 +1,6 @@
 /* mote overlay/console — compact ANSI truecolor TTY (C99) */
 #include "platform.h"
+#include "common.h"
 #include "utf8.h"
 
 #include <poll.h>
@@ -616,7 +617,7 @@ Plat *plat_create(const char *title, int w, int h) {
   struct termios t;
   p = (Plat *)calloc(1, sizeof *p);
   if (!p) return NULL;
-  p->font_px = 15;
+  p->font_px = MOTE_FONT_PX;
   p->color_mode = detect_color_mode();
   p->utf8 = detect_utf8_console() ? MOTE_TRUE : MOTE_FALSE;
   /* Soft invert caret drifts on Linux VT when UTF-8 width mismatches; use HW. */

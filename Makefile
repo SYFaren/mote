@@ -45,7 +45,7 @@ wasm:
 ANSI_CFLAGS = -std=c89 -pedantic -Wall -Wextra -Wdeclaration-after-statement \
 	-Wno-long-long -Wno-overlength-strings -Icore -Iplat -c
 CORE_ANSI = core/buffer.c core/utf8.c core/undo.c core/hl.c core/editor.c \
-	core/theme.c core/config.c core/mote_snprintf.c core/regex.c core/dirlist.c
+	core/theme.c core/config.c core/mote_snprintf.c core/regex.c core/dirlist.c core/app.c
 
 ansi-check: $(CORE_ANSI) plat/platform.h
 	@mkdir -p build/ansi

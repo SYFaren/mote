@@ -143,7 +143,7 @@ Plat *plat_create(const char *title, int w, int h) {
                          CopyFromParent, CWEventMask | CWBackingStore, &swa);
   gcv.graphics_exposures = False;
   p->gc = XCreateGC(p->dpy, p->win, GCGraphicsExposures, &gcv);
-  p->font_px = 15;
+  p->font_px = MOTE_FONT_PX;
   load_font(p, 15);
   p->wm_delete = XInternAtom(p->dpy, "WM_DELETE_WINDOW", False);
   XSetWMProtocols(p->dpy, p->win, &p->wm_delete, 1);

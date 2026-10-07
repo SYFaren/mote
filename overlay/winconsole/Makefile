@@ -4,9 +4,7 @@ UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..
 include ../build.mk
 
-CORE = $(ROOT)/core/buffer.c $(ROOT)/core/utf8.c $(ROOT)/core/undo.c \
-	$(ROOT)/core/hl.c $(ROOT)/core/editor.c $(ROOT)/core/theme.c \
-	$(ROOT)/core/config.c $(ROOT)/core/mote_snprintf.c $(ROOT)/core/regex.c $(ROOT)/core/dirlist.c
+include ../core.mk
 OV = main.c winconsole.c ../win32/os.c
 SRC = $(CORE) $(OV)
 
@@ -20,7 +18,7 @@ LDFLAGS = -static -static-libgcc -Oz -flto \
 
 all: build/mote.exe
 
-build/mote.exe: $(SRC) $(ROOT)/plat/platform.h | build
+build/mote.exe: $(SRC) $(CORE_H) | build
 	$(WINCC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 pack: build/mote.exe

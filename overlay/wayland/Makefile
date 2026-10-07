@@ -4,9 +4,7 @@ UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..
 include ../build.mk
 
-CORE = $(ROOT)/core/buffer.c $(ROOT)/core/utf8.c $(ROOT)/core/undo.c \
-	$(ROOT)/core/hl.c $(ROOT)/core/editor.c $(ROOT)/core/theme.c \
-	$(ROOT)/core/config.c $(ROOT)/core/mote_snprintf.c $(ROOT)/core/regex.c $(ROOT)/core/dirlist.c
+include ../core.mk
 PROTO = gen/xdg-shell-protocol.c gen/xdg-decoration-unstable-v1-protocol.c
 OV = ../soft/main.c wayland.c ../posix/os.c ../soft/soft.c $(PROTO)
 SRC = $(CORE) $(OV)
@@ -39,7 +37,7 @@ gen/xdg-decoration-unstable-v1-client-protocol.h: | gen
 gen/xdg-decoration-unstable-v1-protocol.c: | gen
 	wayland-scanner private-code $(XDG_DECO_XML) $@
 
-build/mote: $(SRC) $(ROOT)/plat/platform.h ../soft/soft.h | build
+build/mote: $(SRC) $(CORE_H) ../soft/soft.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 pack: build/mote

@@ -4,9 +4,7 @@ UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..
 include ../build.mk
 
-CORE = $(ROOT)/core/buffer.c $(ROOT)/core/utf8.c $(ROOT)/core/undo.c \
-	$(ROOT)/core/hl.c $(ROOT)/core/editor.c $(ROOT)/core/theme.c \
-	$(ROOT)/core/config.c $(ROOT)/core/mote_snprintf.c $(ROOT)/core/regex.c $(ROOT)/core/dirlist.c
+include ../core.mk
 OV = ../soft/main.c fbdev.c ../posix/os.c ../soft/soft.c
 SRC = $(CORE) $(OV)
 
@@ -18,7 +16,7 @@ LDFLAGS = $(MOTE_LD_OPT)
 
 all: build/mote
 
-build/mote: $(SRC) $(ROOT)/plat/platform.h ../soft/soft.h | build
+build/mote: $(SRC) $(CORE_H) ../soft/soft.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 pack: build/mote

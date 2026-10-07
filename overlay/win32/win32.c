@@ -355,7 +355,7 @@ Plat *plat_create(const char *title, int w, int h) {
   }
   p->hdc_win = GetDC(p->hwnd);
   p->hdc_mem = CreateCompatibleDC(p->hdc_win);
-  p->font_px = 15;
+  p->font_px = MOTE_FONT_PX;
   /* Fixed font with Cyrillic coverage (stock SYSTEM_FIXED often lacks glyphs). */
   p->font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,

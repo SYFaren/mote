@@ -3,9 +3,7 @@
 EMCC ?= emcc
 ROOT := ../..
 
-CORE = $(ROOT)/core/buffer.c $(ROOT)/core/utf8.c $(ROOT)/core/undo.c \
-	$(ROOT)/core/hl.c $(ROOT)/core/editor.c $(ROOT)/core/theme.c \
-	$(ROOT)/core/config.c $(ROOT)/core/mote_snprintf.c $(ROOT)/core/regex.c $(ROOT)/core/dirlist.c
+include ../core.mk
 OV = ../soft/main.c ../sdl/sdl.c ../posix/os.c ../soft/soft.c
 SRC = $(CORE) $(OV)
 
@@ -20,7 +18,7 @@ LDFLAGS = -sUSE_SDL=2 -sALLOW_MEMORY_GROWTH=1 -sASYNCIFY \
 
 all: build/mote.html
 
-build/mote.html: $(SRC) shell.html $(ROOT)/plat/platform.h | build
+build/mote.html: $(SRC) shell.html $(CORE_H) | build
 	$(EMCC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 serve: build/mote.html

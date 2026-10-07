@@ -12,7 +12,7 @@ void cfg_defaults(MoteCfg *c) {
   c->win_w = 800;
   c->win_h = 600;
   c->theme_id = 0;
-  c->font_px = 15;
+  c->font_px = MOTE_FONT_PX;
 }
 
 static void clamp_wh(MoteCfg *c) {

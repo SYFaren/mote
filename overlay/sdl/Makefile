@@ -4,9 +4,7 @@ UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..
 include ../build.mk
 
-CORE = $(ROOT)/core/buffer.c $(ROOT)/core/utf8.c $(ROOT)/core/undo.c \
-	$(ROOT)/core/hl.c $(ROOT)/core/editor.c $(ROOT)/core/theme.c \
-	$(ROOT)/core/config.c $(ROOT)/core/mote_snprintf.c $(ROOT)/core/regex.c $(ROOT)/core/dirlist.c
+include ../core.mk
 OV = ../soft/main.c sdl.c ../posix/os.c ../soft/soft.c
 SRC = $(CORE) $(OV)
 
@@ -26,7 +24,7 @@ endif
 
 all: $(MOTE_BUILDDIR)/mote
 
-$(MOTE_BUILDDIR)/mote: $(SRC) $(ROOT)/plat/platform.h ../soft/soft.h | $(MOTE_BUILDDIR)
+$(MOTE_BUILDDIR)/mote: $(SRC) $(CORE_H) ../soft/soft.h | $(MOTE_BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 pack: $(MOTE_BUILDDIR)/mote
