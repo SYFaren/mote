@@ -28,4 +28,4 @@ echo "Installed:"
 ls -la "$BIN/mote" "$BIN/mote-x11" 2>/dev/null || true
 "$BIN/mote" --version
 echo "Help check (console):"
-strings "$BIN/mote" | grep 'F8/Alt+B set' || echo "MISSING new help string!"
+strings "$BIN/mote" | grep 'F8 / Alt+M' || echo "MISSING new help string!"

@@ -127,6 +127,8 @@ static void map_linux_key(Plat *p, int code, int value) {
       pk = PK_ZOOMRESET;
     else if (code == KEY_RIGHTBRACE)
       pk = PK_BRACKET;
+    else if (code == KEY_SLASH)
+      pk = PK_COMMENT;
     else if (code == KEY_TAB)
       pk = p->shift ? PK_PREVDOC : PK_NEXTDOC;
     if (pk != PK_NONE) {
@@ -154,12 +156,15 @@ static void map_linux_key(Plat *p, int code, int value) {
   case KEY_ESC: key_nav(p, PK_ESCAPE); return;
   case KEY_TAB: key_nav(p, PK_TAB); return;
   case KEY_F1: key_nav(p, PK_F1); return;
+  case KEY_F2: key_nav(p, p->shift ? PK_PREVDOC : PK_NEXTDOC); return;
   case KEY_F3: key_nav(p, p->shift ? PK_FINDPREV : PK_FINDNEXT); return;
   case KEY_F4:
     if (p->ctrl) key_nav(p, PK_CLOSEDOC);
     return;
   case KEY_F5: key_nav(p, PK_RELOAD); return;
   case KEY_F7: key_nav(p, PK_WS); return;
+  case KEY_F8: key_nav(p, PK_BOOKMARK_SET); return;
+  case KEY_F9: key_nav(p, PK_BOOKMARK); return;
   case KEY_Q:
     if (p->ctrl) {
       key_nav(p, PK_QUIT);

@@ -562,9 +562,16 @@ static void map_key(KeySym ks, unsigned state, PlatEvent *ev) {
   case XK_Tab:
   case XK_ISO_Left_Tab: ev->key = PK_TAB; break;
   case XK_F1: ev->key = PK_F1; break;
+  case XK_F2: ev->key = shift ? PK_PREVDOC : PK_NEXTDOC; break;
   case XK_F3: ev->key = shift ? PK_FINDPREV : PK_FINDNEXT; break;
+  case XK_F4:
+    if (ctrl) ev->key = PK_CLOSEDOC;
+    else ev->type = PE_NONE;
+    break;
   case XK_F5: ev->key = PK_RELOAD; break;
   case XK_F7: ev->key = PK_WS; break;
+  case XK_F8: ev->key = PK_BOOKMARK_SET; break;
+  case XK_F9: ev->key = PK_BOOKMARK; break;
   default: ev->type = PE_NONE; break;
   }
 }

@@ -302,6 +302,8 @@ static void ingest_key_event(Plat *p, KEY_EVENT_RECORD *ke) {
   case VK_F3: key_flush(p, shift ? PK_FINDPREV : PK_FINDNEXT, MOTE_FALSE, shift); return;
   case VK_F5: key_flush(p, PK_RELOAD, MOTE_FALSE, MOTE_FALSE); return;
   case VK_F7: key_flush(p, PK_WS, MOTE_FALSE, MOTE_FALSE); return;
+  case VK_F8: key_flush(p, PK_BOOKMARK_SET, MOTE_FALSE, MOTE_FALSE); return;
+  case VK_F9: key_flush(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE); return;
   default: break;
   }
 

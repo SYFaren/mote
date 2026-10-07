@@ -1235,55 +1235,55 @@ static size_t bookmark_target_row(Doc *d) {
 
 static void bookmark_toggle(Editor *e, Doc *d) {
   size_t row;
-  int i, slot = 0;
+  int i;
+  char msg[48];
   row = bookmark_target_row(d);
   for (i = 0; i < MAX_BOOKMARKS; i++) {
     if (d->bm_row[i] == row) {
       d->bm_row[i] = (size_t)-1;
-      set_status(e, "mark cleared");
+      set_status(e, "bookmark cleared");
       mark(e);
       return;
     }
   }
-  for (i = 0; i < MAX_BOOKMARKS; i++) {
-    if (d->bm_row[i] == (size_t)-1) {
-      slot = i;
-      break;
-    }
-    slot = i + 1;
-  }
-  if (slot >= MAX_BOOKMARKS) slot = 0;
-  d->bm_row[slot] = row;
-  {
-    char msg[32];
-    mote_snprintf(msg, sizeof msg, "mark %d", slot + 1);
+  for (i = 0; i < MAX_BOOKMARKS; i++)
+    if (d->bm_row[i] == (size_t)-1) break;
+  if (i >= MAX_BOOKMARKS) {
+    mote_snprintf(msg, sizeof msg, "max %d bookmarks, F8 on one clears it",
+                  MAX_BOOKMARKS);
     set_status(e, msg);
+    return;
   }
+  d->bm_row[i] = row;
+  mote_snprintf(msg, sizeof msg, "bookmark set: line %lu", (unsigned long)(row + 1));
+  set_status(e, msg);
   mark(e);
 }
 
+/* Next bookmark below the caret line, wrapping to the topmost one. */
 static void bookmark_jump(Editor *e, Doc *d) {
-  int tries = 0;
+  size_t r, next = (size_t)-1, first = (size_t)-1;
+  int i;
+  char msg[48];
   sync_caret_rc(d);
-  if (d->bm_row[d->bm_jump] == (size_t)-1) d->bm_jump = 0;
-  for (tries = 0; tries < MAX_BOOKMARKS; tries++) {
-    if (d->bm_row[d->bm_jump] != (size_t)-1) {
-      d->caret = row_start(d, d->bm_row[d->bm_jump]);
-      clear_sel(d);
-      sync_caret_rc(d);
-      ensure_visible(e, d);
-      {
-        char msg[32];
-        mote_snprintf(msg, sizeof msg, "mark %d", d->bm_jump + 1);
-        set_status(e, msg);
-      }
-      d->bm_jump = (d->bm_jump + 1) % MAX_BOOKMARKS;
-      mark(e);
-      return;
-    }
-    d->bm_jump = (d->bm_jump + 1) % MAX_BOOKMARKS;
+  for (i = 0; i < MAX_BOOKMARKS; i++) {
+    r = d->bm_row[i];
+    if (r == (size_t)-1) continue;
+    if (first == (size_t)-1 || r < first) first = r;
+    if (r > d->caret_row && (next == (size_t)-1 || r < next)) next = r;
   }
-  set_status(e, "no bookmarks");
+  if (first == (size_t)-1) {
+    set_status(e, "no bookmarks (F8 sets one)");
+    return;
+  }
+  if (next == (size_t)-1) next = first;
+  d->caret = row_start(d, next);
+  clear_sel(d);
+  sync_caret_rc(d);
+  ensure_visible(e, d);
+  mote_snprintf(msg, sizeof msg, "bookmark: line %lu", (unsigned long)(next + 1));
+  set_status(e, msg);
+  mark(e);
 }
 
 static void insert_newline_indent(Editor *e, Doc *d) {
@@ -1877,6 +1877,13 @@ void ed_handle(Editor *e, Plat *p, const PlatEvent *ev) {
       e->mode = MODE_EDIT;
       set_status(e, "F1 help");
       mark(e);
+    } else if (ev->type == PE_KEY && (ev->key == PK_UP || ev->key == PK_PGUP)) {
+      e->help_top -= ev->key == PK_UP ? 1 : 10;
+      if (e->help_top < 0) e->help_top = 0;
+      mark(e);
+    } else if (ev->type == PE_KEY && (ev->key == PK_DOWN || ev->key == PK_PGDN)) {
+      e->help_top += ev->key == PK_DOWN ? 1 : 10; /* clamped in ed_draw */
+      mark(e);
     }
     return;
   }
@@ -2235,6 +2242,7 @@ void ed_handle(Editor *e, Plat *p, const PlatEvent *ev) {
   case PK_HELP:
   case PK_F1:
     e->mode = MODE_HELP;
+    e->help_top = 0;
     mark(e);
     break;
   case PK_WRAP:
@@ -2345,6 +2353,70 @@ static void draw_text_fit(Plat *p, int x, int y, const char *s, int n, mote_u32 
   if (out_n > 0) plat_draw_text(p, x, y, tmp, out_n, rgb);
 }
 
+typedef struct {
+  const char *key, *desc; /* desc == NULL: section header */
+} HelpItem;
+
+static const HelpItem help_left[] = {
+    {"FILE", NULL},
+    {"^S / Alt+S", "save / save as"},
+    {"^O / ^P", "open / quick open"},
+    {"^N", "new file"},
+    {"^E", "recent files"},
+    {"F5", "reload from disk"},
+    {"^Tab / F2", "next file (+Sh: prev)"},
+    {"^F4 / ^Sh+W", "close file"},
+    {"^Q", "quit"},
+    {"FIND", NULL},
+    {"^F", "find, /re/ = regex"},
+    {"F3 / Sh+F3", "next / previous match"},
+    {"^R", "replace, /a/b/ = regex"},
+    {"^G", "go to line"},
+    {"Alt+C / W", "match case / whole word"},
+    {"BOOKMARKS", NULL},
+    {"F8 / Alt+M", "toggle on this line"},
+    {"F9 / Alt+J", "jump to next"},
+};
+
+static const HelpItem help_right[] = {
+    {"EDIT", NULL},
+    {"^Z / ^Y", "undo / redo"},
+    {"^X ^C ^V", "cut / copy / paste"},
+    {"^A", "select all"},
+    {"^D", "duplicate line"},
+    {"Alt+K", "delete line"},
+    {"^/", "comment line"},
+    {"(Sh+)Tab", "indent / outdent"},
+    {"^]", "jump to bracket"},
+    {"VIEW", NULL},
+    {"^W", "word wrap"},
+    {"F7", "show whitespace"},
+    {"^T", "next theme"},
+    {"^= ^- ^0", "zoom in / out / reset"},
+    {"Alt+R", "read-only"},
+    {"Alt+E", "LF / CRLF line ends"},
+    {"F1 / Esc", "close this help"},
+    {"^ = Ctrl", "Sh = Shift"},
+};
+
+#define HELP_NL ((int)(sizeof help_left / sizeof help_left[0]))
+#define HELP_NR ((int)(sizeof help_right / sizeof help_right[0]))
+#define HELP_KEY_W 13    /* left key column, cells */
+#define HELP_COL2 38     /* right column start, cells */
+#define HELP_KEY2_W 10   /* right key column, cells */
+#define HELP_TWO_COL_W 70 /* min text width for two columns, cells */
+
+static void draw_help_item(Plat *p, const Theme *t, const HelpItem *it, int x, int y,
+                           int key_w, int max_px, int cw) {
+  if (!it->desc) {
+    draw_text_fit(p, x, y, it->key, -1, t->type, max_px, cw);
+    return;
+  }
+  draw_text_fit(p, x, y, it->key, -1, t->kw, max_px, cw);
+  if (max_px > key_w * cw)
+    draw_text_fit(p, x + key_w * cw, y, it->desc, -1, t->fg, max_px - key_w * cw, cw);
+}
+
 static void draw_range(Editor *e, Doc *d, Plat *p, size_t a, size_t b, int y,
                        size_t col0, size_t col_max, const HlSpan *spans,
                        int nspans, const Theme *t) {
@@ -2414,16 +2486,6 @@ void ed_draw(Editor *e, Plat *p) {
   int in_ml = 0;
   size_t cvr, cvc, top;
   size_t *vrow_vp = NULL;
-  static const char *help[] = {
-      "mote  F1/Alt+H help  Esc",
-      "File  ^S Alt+S ^O ^P ^Q  F5  ^N  ^W  ^F4/S-W  ^E  F2/^Tab",
-      "Edit  ^Z/^Y  ^F F3/S-F3  ^R  ^G  ^/  ^D  ^]  Alt+K  Tab",
-      "Nav   ^B jump  F8/Alt+B set  F9/Alt+J  ^M xterm  ^P quick open",
-      "Clip  ^X/^C/^V/^A",
-      "View  ^T  F7  ^=/^-/^0  Alt+R  Alt+E",
-      "Find  /pat/ regex  /a/b/ replace  Alt+C case  Alt+W word",
-      "Ask   ^S confirm  ^Q discard  Esc",
-  };
   plat_get_size(p, &w, &h);
   e->cw = plat_font_w(p);
   e->ch = plat_font_h(p);
@@ -2620,8 +2682,9 @@ void ed_draw(Editor *e, Plat *p) {
 
   if (e->mode == MODE_HELP || e->mode == MODE_RECENT || e->mode == MODE_QUICKOPEN) {
     int nlines_h, box_h, box_y, box_w, max_h, max_lines, draw_n, text_w;
-    int mx, tx, pad, rows_fit;
+    int mx, tx, pad, rows_fit, help_two, inset;
     pad = e->cw > 0 ? e->cw : 1;
+    inset = pad > 1 ? pad / 2 : 1;
     mx = pad * 2;
     if (mx * 2 >= w) mx = pad;
     if (mx < 1) mx = 1;
@@ -2636,12 +2699,13 @@ void ed_draw(Editor *e, Plat *p) {
     text_w = box_w - (tx - mx) - pad;
     if (text_w < e->cw) text_w = box_w - (tx - mx);
     if (text_w < 1) text_w = 1;
-    max_h = sw - box_y;
+    max_h = sw - box_y - inset; /* border must not cover the status bar */
     if (max_h < e->ch) max_h = e->ch;
     rows_fit = e->ch > 0 ? max_h / e->ch : 1;
     max_lines = rows_fit > 2 ? rows_fit - 2 : 1;
+    help_two = text_w / e->cw >= HELP_TWO_COL_W;
     if (e->mode == MODE_HELP)
-      nlines_h = (int)(sizeof help / sizeof help[0]);
+      nlines_h = help_two ? (HELP_NL > HELP_NR ? HELP_NL : HELP_NR) : HELP_NL + HELP_NR;
     else if (e->mode == MODE_RECENT)
       nlines_h = e->nrecent + 1;
     else
@@ -2656,23 +2720,36 @@ void ed_draw(Editor *e, Plat *p) {
       if (draw_n < 1) draw_n = 1;
     }
     {
-      int inset = pad > 1 ? pad / 2 : (pad > 0 ? 1 : 0);
       int bx = mx > inset ? mx - inset : 0;
       int by = box_y > inset ? box_y - inset : 0;
       plat_fill_rect(p, bx, by, box_w + inset * 2, box_h + inset * 2, t->help_bd);
     }
     plat_fill_rect(p, mx, box_y, box_w, box_h, t->help_bg);
     if (e->mode == MODE_HELP) {
+      if (e->help_top > nlines_h - draw_n) e->help_top = nlines_h - draw_n;
+      if (e->help_top < 0) e->help_top = 0;
       for (i = 0; i < draw_n; i++) {
         int ly = box_y + (i + 1) * e->ch;
+        int r = i + e->help_top;
         if (ly + e->ch > box_y + box_h) break;
-        draw_text_fit(p, tx, ly, help[i], (int)strlen(help[i]), t->fg, text_w,
-                      e->cw);
+        if (help_two) {
+          int x2 = tx + HELP_COL2 * e->cw;
+          if (r < HELP_NL)
+            draw_help_item(p, t, &help_left[r], tx, ly, HELP_KEY_W,
+                           (HELP_COL2 - 1) * e->cw, e->cw);
+          if (r < HELP_NR)
+            draw_help_item(p, t, &help_right[r], x2, ly, HELP_KEY2_W,
+                           text_w - HELP_COL2 * e->cw, e->cw);
+        } else if (r < HELP_NL + HELP_NR) {
+          const HelpItem *it = r < HELP_NL ? &help_left[r] : &help_right[r - HELP_NL];
+          draw_help_item(p, t, it, tx, ly, HELP_KEY_W, text_w, e->cw);
+        }
       }
       if (draw_n < nlines_h) {
         int ly = box_y + (draw_n + 1) * e->ch;
+        const char *more = e->help_top + draw_n < nlines_h ? "  ... Down/PgDn" : "  ... Up/PgUp";
         if (ly + e->ch <= box_y + box_h)
-          draw_text_fit(p, tx, ly, "  ... Esc", 9, t->gutter_fg, text_w, e->cw);
+          draw_text_fit(p, tx, ly, more, -1, t->gutter_fg, text_w, e->cw);
       }
     } else if (e->mode == MODE_RECENT) {
       draw_text_fit(p, tx, box_y + e->ch, "Recent", 6, t->fg, text_w, e->cw);

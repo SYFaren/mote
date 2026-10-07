@@ -83,6 +83,7 @@ static void map_key(Plat *p, const SDL_KeyboardEvent *ke) {
     if (k == SDLK_MINUS) { key_nav(p, PK_ZOOMOUT, 1, shift); return; }
     if (k == SDLK_0) { key_nav(p, PK_ZOOMRESET, 1, shift); return; }
     if (k == SDLK_RIGHTBRACKET) { key_nav(p, PK_BRACKET, 1, shift); return; }
+    if (k == SDLK_SLASH) { key_nav(p, PK_COMMENT, 1, shift); return; }
     if (k == SDLK_TAB) {
       key_nav(p, shift ? PK_PREVDOC : PK_NEXTDOC, 1, shift);
       return;
@@ -108,10 +109,13 @@ static void map_key(Plat *p, const SDL_KeyboardEvent *ke) {
   case SDLK_ESCAPE: pk = PK_ESCAPE; break;
   case SDLK_TAB: pk = PK_TAB; break;
   case SDLK_F1: pk = PK_F1; break;
+  case SDLK_F2: pk = shift ? PK_PREVDOC : PK_NEXTDOC; break;
   case SDLK_F3: pk = shift ? PK_FINDPREV : PK_FINDNEXT; break;
   case SDLK_F4: if (ctrl) pk = PK_CLOSEDOC; break;
   case SDLK_F5: pk = PK_RELOAD; break;
   case SDLK_F7: pk = PK_WS; break;
+  case SDLK_F8: pk = PK_BOOKMARK_SET; break;
+  case SDLK_F9: pk = PK_BOOKMARK; break;
   default: break;
   }
   if (pk != PK_NONE) key_nav(p, pk, ctrl, shift);

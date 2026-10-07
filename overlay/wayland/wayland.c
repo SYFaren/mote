@@ -299,6 +299,8 @@ static void kb_key(void *data, struct wl_keyboard *kb, uint32_t serial, uint32_t
       pk = PK_ZOOMRESET;
     else if (sym == XKB_KEY_bracketright)
       pk = PK_BRACKET;
+    else if (sym == XKB_KEY_slash || sym == XKB_KEY_question)
+      pk = PK_COMMENT;
     else if (sym == XKB_KEY_Tab)
       pk = p->shift ? PK_PREVDOC : PK_NEXTDOC;
     if (pk != PK_NONE) {
@@ -327,12 +329,15 @@ static void kb_key(void *data, struct wl_keyboard *kb, uint32_t serial, uint32_t
   case XKB_KEY_Escape: key_nav(p, PK_ESCAPE); return;
   case XKB_KEY_Tab: key_nav(p, PK_TAB); return;
   case XKB_KEY_F1: key_nav(p, PK_F1); return;
+  case XKB_KEY_F2: key_nav(p, p->shift ? PK_PREVDOC : PK_NEXTDOC); return;
   case XKB_KEY_F3: key_nav(p, p->shift ? PK_FINDPREV : PK_FINDNEXT); return;
   case XKB_KEY_F4:
     if (p->ctrl) key_nav(p, PK_CLOSEDOC);
     return;
   case XKB_KEY_F5: key_nav(p, PK_RELOAD); return;
   case XKB_KEY_F7: key_nav(p, PK_WS); return;
+  case XKB_KEY_F8: key_nav(p, PK_BOOKMARK_SET); return;
+  case XKB_KEY_F9: key_nav(p, PK_BOOKMARK); return;
   default: break;
   }
 

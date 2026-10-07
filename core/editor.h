@@ -51,7 +51,6 @@ typedef struct {
   size_t match_a, match_b;
   size_t bracket_a, bracket_b;
   size_t bm_row[MAX_BOOKMARKS]; /* line index, (size_t)-1 = unset */
-  int bm_jump;
   int hl_in_ml;
   size_t hl_ml_row;
   mote_bool hl_ml_valid;
@@ -82,6 +81,7 @@ typedef struct {
   int theme_id;
   char recent[MAX_RECENT][1024];
   int nrecent, recent_sel;
+  int help_top;
   size_t *vrow_cache;
   size_t vrow_n;
   int vrow_cols;

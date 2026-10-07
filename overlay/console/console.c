@@ -429,7 +429,7 @@ static int finish_esc(Plat *p) {
     else if (code == 5) k = PK_PGUP;
     else if (code == 6) k = PK_PGDN;
     else if (code == 11) k = PK_F1;
-    else if (code == 12) k = PK_NEXTDOC; /* F2 */
+    else if (code == 12) k = shift ? PK_PREVDOC : PK_NEXTDOC; /* F2 */
     else if (code == 13) k = shift ? PK_FINDPREV : PK_FINDNEXT; /* F3 */
     else if (code == 14) k = shift ? PK_FINDPREV : PK_CLOSEDOC; /* F4 / S-F3 */
     else if (code == 15) k = PK_RELOAD; /* F5 */

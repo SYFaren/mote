@@ -364,6 +364,39 @@ int main(void) {
     drain(&ed, p);
     expect(ed.docs[ed.cur].bm_row[0] == (size_t)-1, "bookmark toggle clear");
 
+    /* rows: 0 one, 1 two, 2 three; marks on 2 then 1, jump goes by line order */
+    push_key(p, PK_DOWN, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_DOWN, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_BOOKMARK_SET, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_UP, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_BOOKMARK_SET, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_DOWN, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    expect(ed.docs[ed.cur].caret_row == 2, "on last marked line");
+    push_key(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    expect(ed.docs[ed.cur].caret_row == 1, "bookmark jump wraps to topmost");
+    push_key(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    expect(ed.docs[ed.cur].caret_row == 2, "bookmark jump goes down");
+    push_key(p, PK_BOOKMARK_SET, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_BOOKMARK_SET, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    expect(ed.docs[ed.cur].bm_row[0] == (size_t)-1 && ed.docs[ed.cur].bm_row[1] == (size_t)-1,
+           "bookmarks cleared");
+    push_key(p, PK_UP, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_UP, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+
     mote_snprintf(ed.docs[ed.cur].path, sizeof ed.docs[0].path, "%s", path2);
     push_key(p, PK_QUICKOPEN, MOTE_TRUE, MOTE_FALSE);
     drain(&ed, p);

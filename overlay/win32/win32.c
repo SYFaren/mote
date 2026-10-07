@@ -134,10 +134,13 @@ static void map_vk(WPARAM vk, mote_bool ctrl, mote_bool shift, mote_bool alt, Pl
   case VK_ESCAPE: ev->key = PK_ESCAPE; break;
   case VK_TAB: ev->key = PK_TAB; break;
   case VK_F1: ev->key = PK_F1; break;
+  case VK_F2: ev->key = shift ? PK_PREVDOC : PK_NEXTDOC; break;
   case VK_F3: ev->key = shift ? PK_FINDPREV : PK_FINDNEXT; break;
   case VK_F4: if (ctrl) { ev->key = PK_CLOSEDOC; return; } break;
   case VK_F5: ev->key = PK_RELOAD; break;
   case VK_F7: ev->key = PK_WS; break;
+  case VK_F8: ev->key = PK_BOOKMARK_SET; break;
+  case VK_F9: ev->key = PK_BOOKMARK; break;
   default: ev->type = PE_NONE; break;
   }
 }

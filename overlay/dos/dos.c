@@ -383,6 +383,8 @@ static void ingest_key(Plat *p, int k) {
   case K_Shift_F3: key_flush(p, PK_FINDPREV, MOTE_FALSE, MOTE_TRUE); break;
   case K_F5: key_flush(p, PK_RELOAD, MOTE_FALSE, MOTE_FALSE); break;
   case K_F7: key_flush(p, PK_WS, MOTE_FALSE, MOTE_FALSE); break;
+  case K_F8: key_flush(p, PK_BOOKMARK_SET, MOTE_FALSE, MOTE_FALSE); break;
+  case K_F9: key_flush(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE); break;
   case K_Control_F4:
   case K_Alt_F4: key_flush(p, PK_CLOSEDOC, MOTE_TRUE, MOTE_FALSE); break;
   case K_Control_Left: key_flush(p, PK_LEFT, MOTE_TRUE, MOTE_FALSE); break;
