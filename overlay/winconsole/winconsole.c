@@ -342,13 +342,21 @@ static int running_on_wine(void) {
 
 /* Raster OEM fonts lack Cyrillic; prefer a TrueType face with BMP coverage. */
 static void prefer_unicode_font(HANDLE hout) {
+  /* Vista+; resolved at runtime so the exe still loads on XP. */
+  typedef BOOL(WINAPI * FontExFn)(HANDLE, BOOL, PCONSOLE_FONT_INFOEX);
+  HMODULE k32 = GetModuleHandleA("kernel32.dll");
+  FontExFn get_font =
+      (FontExFn)(void (*)(void))GetProcAddress(k32, "GetCurrentConsoleFontEx");
+  FontExFn set_font =
+      (FontExFn)(void (*)(void))GetProcAddress(k32, "SetCurrentConsoleFontEx");
   CONSOLE_FONT_INFOEX fi, set;
   static const wchar_t *names[] = {L"Cascadia Mono", L"Consolas",
                                    L"Lucida Console", L"Courier New", NULL};
   int i;
+  if (!get_font || !set_font) return;
   memset(&fi, 0, sizeof fi);
   fi.cbSize = sizeof fi;
-  if (!GetCurrentConsoleFontEx(hout, FALSE, &fi)) return;
+  if (!get_font(hout, FALSE, &fi)) return;
   for (i = 0; names[i]; i++) {
     set = fi;
     memset(set.FaceName, 0, sizeof set.FaceName);
@@ -357,7 +365,7 @@ static void prefer_unicode_font(HANDLE hout) {
       int j;
       for (j = 0; j < LF_FACESIZE - 1 && s[j]; j++) set.FaceName[j] = s[j];
     }
-    if (SetCurrentConsoleFontEx(hout, FALSE, &set)) return;
+    if (set_font(hout, FALSE, &set)) return;
   }
 }
 

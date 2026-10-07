@@ -323,7 +323,13 @@ Plat *plat_create(const char *title, int w, int h) {
   wchar_t *wtitle;
   Plat *p = (Plat *)calloc(1, sizeof(Plat));
   if (!p) return NULL;
-  SetProcessDPIAware();
+  {
+    /* Vista+; resolved at runtime so the exe still loads on XP. */
+    typedef BOOL(WINAPI * DpiAwareFn)(void);
+    DpiAwareFn dpi_aware = (DpiAwareFn)(void (*)(void))GetProcAddress(
+        GetModuleHandleW(L"user32.dll"), "SetProcessDPIAware");
+    if (dpi_aware) dpi_aware();
+  }
   g_plat = p;
   p->width = w;
   p->height = h;
