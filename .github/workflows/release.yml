@@ -55,13 +55,35 @@ jobs:
             libx11-dev:arm64 libx11-dev:armhf libx11-dev:i386 libx11-dev:riscv64 \
             libsdl2-dev:arm64 libsdl2-dev:armhf libsdl2-dev:i386 libsdl2-dev:riscv64 \
             qemu-user-static zip pkg-config upx-ucl curl
-      - name: Build Linux + Windows + cross + musl
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/opt/djgpp
+            ~/.local/opt/emsdk
+          key: dos-web-djgpp3.4-gcc1220-emsdk6.0.11
+      - name: DOS (DJGPP) + Web (emscripten) toolchains
+        run: |
+          mkdir -p ~/.local/opt
+          if [ ! -x ~/.local/opt/djgpp/bin/i586-pc-msdosdjgpp-gcc ]; then
+            curl -fsSL https://github.com/andrewwutw/build-djgpp/releases/download/v3.4/djgpp-linux64-gcc1220.tar.bz2 \
+              | tar -xj -C ~/.local/opt
+          fi
+          if [ ! -d ~/.local/opt/emsdk/upstream ]; then
+            rm -rf ~/.local/opt/emsdk
+            git clone -q --depth 1 https://github.com/emscripten-core/emsdk.git ~/.local/opt/emsdk
+            ~/.local/opt/emsdk/emsdk install 6.0.11
+          fi
+          ~/.local/opt/emsdk/emsdk activate 6.0.11
+          echo "$HOME/.local/opt/djgpp/bin" >> "$GITHUB_PATH"
+      - name: Build Linux + Windows + cross + musl + DOS + Web
         run: |
           make release-linux release-windows
           make release-cross-linux || true
           make release-musl-linux
-          make release-dos || true
-          make release-extra || true
+          make release-dos
+          . ~/.local/opt/emsdk/emsdk_env.sh
+          make release-extra
+          ls -la dist-release/flat/mote-dos.exe dist-release/flat/mote-web.zip
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
