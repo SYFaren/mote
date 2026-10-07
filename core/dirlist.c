@@ -6,6 +6,7 @@
 #if defined(_WIN32) && !defined(__DJGPP__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <wchar.h>
 
 static int push_name(char out[DIRLIST_MAX][256], int n, int max, const char *name) {
   if (n >= max || !name || !name[0] || name[0] == '.') return n;

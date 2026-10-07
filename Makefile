@@ -72,7 +72,7 @@ build/test_editor_keys: test/test_editor_keys.c $(CORE_EDTEST) plat/platform.h |
 		-Icore -Iplat -O0 -g -o $@ test/test_editor_keys.c $(CORE_EDTEST)
 
 build/test_console_esc: test/test_console_esc.c overlay/console/console.c core/utf8.c plat/platform.h | build
-	$(CC) -std=c99 -Wall -Wextra -Icore -Iplat -DMOTE_TEST_CONSOLE_ESC -O0 -g \
+	$(CC) -std=c99 -Wall -Wextra -D_DEFAULT_SOURCE -Icore -Iplat -DMOTE_TEST_CONSOLE_ESC -O0 -g \
 		-o $@ test/test_console_esc.c overlay/console/console.c core/utf8.c
 
 smoke: ansi-check test
