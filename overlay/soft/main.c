@@ -31,7 +31,7 @@ static int parse_geom(const char *s, int *w, int *h) {
 
 int main(int argc, char **argv) {
   Plat *plat;
-  Editor ed;
+  static Editor ed; /* ~100 KB: too big for the 64 KB wasm stack */
   MoteCfg cfg;
   const char *files[MAX_DOCS];
   int nfiles = 0, i, start_help = 0;
