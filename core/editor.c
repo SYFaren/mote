@@ -1260,28 +1260,35 @@ static void bookmark_toggle(Editor *e, Doc *d) {
   mark(e);
 }
 
-/* Next bookmark below the caret line, wrapping to the topmost one. */
+/* Closest bookmark to the caret line, ties going down. The caret's own
+   line is only a target when it holds the sole bookmark. */
 static void bookmark_jump(Editor *e, Doc *d) {
-  size_t r, next = (size_t)-1, first = (size_t)-1;
+  size_t cur, r, dist, best = (size_t)-1, best_dist = 0;
+  mote_bool any = MOTE_FALSE;
   int i;
   char msg[48];
-  sync_caret_rc(d);
+  cur = bookmark_target_row(d);
   for (i = 0; i < MAX_BOOKMARKS; i++) {
     r = d->bm_row[i];
     if (r == (size_t)-1) continue;
-    if (first == (size_t)-1 || r < first) first = r;
-    if (r > d->caret_row && (next == (size_t)-1 || r < next)) next = r;
+    any = MOTE_TRUE;
+    if (r == cur) continue;
+    dist = r > cur ? r - cur : cur - r;
+    if (best == (size_t)-1 || dist < best_dist || (dist == best_dist && r > cur)) {
+      best = r;
+      best_dist = dist;
+    }
   }
-  if (first == (size_t)-1) {
+  if (!any) {
     set_status(e, "no bookmarks (F8 sets one)");
     return;
   }
-  if (next == (size_t)-1) next = first;
-  d->caret = row_start(d, next);
+  if (best == (size_t)-1) best = cur;
+  d->caret = row_start(d, best);
   clear_sel(d);
   sync_caret_rc(d);
   ensure_visible(e, d);
-  mote_snprintf(msg, sizeof msg, "bookmark: line %lu", (unsigned long)(next + 1));
+  mote_snprintf(msg, sizeof msg, "bookmark: line %lu", (unsigned long)(best + 1));
   set_status(e, msg);
   mark(e);
 }
@@ -2375,7 +2382,7 @@ static const HelpItem help_left[] = {
     {"Alt+C / W", "match case / whole word"},
     {"BOOKMARKS", NULL},
     {"F8 / Alt+M", "toggle on this line"},
-    {"F9 / Alt+J", "jump to next"},
+    {"F9 / Alt+J", "jump to nearest"},
 };
 
 static const HelpItem help_right[] = {

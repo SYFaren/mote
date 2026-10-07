@@ -154,6 +154,12 @@ static void drain(Editor *ed, Plat *p) {
   if (ed->need_draw) ed_draw(ed, p);
 }
 static char *doc_str(Editor *ed) { return buf_strdup(&ed->docs[ed->cur].buf); }
+static void goto_line_key(Editor *ed, Plat *p, const char *line) {
+  push_key(p, PK_GOTO, MOTE_TRUE, MOTE_FALSE);
+  push_text(p, line);
+  push_key(p, PK_ENTER, MOTE_FALSE, MOTE_FALSE);
+  drain(ed, p);
+}
 
 int main(void) {
   Plat *p;
@@ -364,7 +370,7 @@ int main(void) {
     drain(&ed, p);
     expect(ed.docs[ed.cur].bm_row[0] == (size_t)-1, "bookmark toggle clear");
 
-    /* rows: 0 one, 1 two, 2 three; marks on 2 then 1, jump goes by line order */
+    /* rows: 0 one, 1 two, 2 three; marks on 2 then 1, jump alternates */
     push_key(p, PK_DOWN, MOTE_FALSE, MOTE_FALSE);
     drain(&ed, p);
     push_key(p, PK_DOWN, MOTE_FALSE, MOTE_FALSE);
@@ -380,10 +386,10 @@ int main(void) {
     expect(ed.docs[ed.cur].caret_row == 2, "on last marked line");
     push_key(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE);
     drain(&ed, p);
-    expect(ed.docs[ed.cur].caret_row == 1, "bookmark jump wraps to topmost");
+    expect(ed.docs[ed.cur].caret_row == 1, "bookmark jump up");
     push_key(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE);
     drain(&ed, p);
-    expect(ed.docs[ed.cur].caret_row == 2, "bookmark jump goes down");
+    expect(ed.docs[ed.cur].caret_row == 2, "bookmark jump back down");
     push_key(p, PK_BOOKMARK_SET, MOTE_FALSE, MOTE_FALSE);
     drain(&ed, p);
     push_key(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE);
@@ -392,6 +398,30 @@ int main(void) {
     drain(&ed, p);
     expect(ed.docs[ed.cur].bm_row[0] == (size_t)-1 && ed.docs[ed.cur].bm_row[1] == (size_t)-1,
            "bookmarks cleared");
+
+    /* nearest bookmark: marks on rows 0, 3, 7 */
+    push_key(p, PK_SELALL, MOTE_TRUE, MOTE_FALSE);
+    drain(&ed, p);
+    push_key(p, PK_DELETE, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    push_text(p, "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7");
+    drain(&ed, p);
+    ed.docs[ed.cur].bm_row[0] = 0;
+    ed.docs[ed.cur].bm_row[1] = 3;
+    ed.docs[ed.cur].bm_row[2] = 7;
+    goto_line_key(&ed, p, "6");
+    push_key(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    expect(ed.docs[ed.cur].caret_row == 7, "nearest bookmark, tie goes down");
+    goto_line_key(&ed, p, "3");
+    push_key(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    expect(ed.docs[ed.cur].caret_row == 3, "nearest bookmark below");
+    push_key(p, PK_BOOKMARK, MOTE_FALSE, MOTE_FALSE);
+    drain(&ed, p);
+    expect(ed.docs[ed.cur].caret_row == 0, "nearest bookmark above");
+    ed.docs[ed.cur].bm_row[0] = ed.docs[ed.cur].bm_row[1] =
+        ed.docs[ed.cur].bm_row[2] = (size_t)-1;
     push_key(p, PK_UP, MOTE_FALSE, MOTE_FALSE);
     drain(&ed, p);
     push_key(p, PK_UP, MOTE_FALSE, MOTE_FALSE);
