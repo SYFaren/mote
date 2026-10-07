@@ -7,7 +7,7 @@ include ../build.mk
 CORE = $(ROOT)/core/buffer.c $(ROOT)/core/utf8.c $(ROOT)/core/undo.c \
 	$(ROOT)/core/hl.c $(ROOT)/core/editor.c $(ROOT)/core/theme.c \
 	$(ROOT)/core/config.c $(ROOT)/core/mote_snprintf.c $(ROOT)/core/regex.c $(ROOT)/core/dirlist.c
-PROTO = gen/xdg-shell-protocol.c
+PROTO = gen/xdg-shell-protocol.c gen/xdg-decoration-unstable-v1-protocol.c
 OV = ../soft/main.c wayland.c ../posix/os.c ../soft/soft.c $(PROTO)
 SRC = $(CORE) $(OV)
 
@@ -20,7 +20,10 @@ LDFLAGS = $(shell pkg-config --libs wayland-client xkbcommon) $(MOTE_LD_OPT)
 
 all: proto build/mote
 
-proto: gen/xdg-shell-protocol.c gen/xdg-shell-client-protocol.h
+XDG_DECO_XML = /usr/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
+
+proto: gen/xdg-shell-protocol.c gen/xdg-shell-client-protocol.h \
+	gen/xdg-decoration-unstable-v1-protocol.c gen/xdg-decoration-unstable-v1-client-protocol.h
 
 gen/xdg-shell-client-protocol.h: | gen
 	wayland-scanner client-header \
@@ -29,6 +32,12 @@ gen/xdg-shell-client-protocol.h: | gen
 gen/xdg-shell-protocol.c: | gen
 	wayland-scanner private-code \
 	  /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml $@
+
+gen/xdg-decoration-unstable-v1-client-protocol.h: | gen
+	wayland-scanner client-header $(XDG_DECO_XML) $@
+
+gen/xdg-decoration-unstable-v1-protocol.c: | gen
+	wayland-scanner private-code $(XDG_DECO_XML) $@
 
 build/mote: $(SRC) $(ROOT)/plat/platform.h ../soft/soft.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)

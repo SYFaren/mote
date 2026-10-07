@@ -3,6 +3,7 @@
 #include "soft.h"
 #include "soft_keys.h"
 
+#include "xdg-decoration-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 #include <wayland-client.h>
@@ -36,6 +37,8 @@ struct Plat {
   struct wl_surface *surf;
   struct xdg_surface *xdgs;
   struct xdg_toplevel *top;
+  struct zxdg_decoration_manager_v1 *deco_mgr;
+  struct zxdg_toplevel_decoration_v1 *deco;
   struct wl_keyboard *kb;
   struct wl_pointer *ptr;
   struct xkb_context *xkb_ctx;
@@ -487,6 +490,8 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
   else if (strcmp(iface, "xdg_wm_base") == 0) {
     p->xdg = wl_registry_bind(reg, name, &xdg_wm_base_interface, 1);
     xdg_wm_base_add_listener(p->xdg, &xdg_wm_base_listener, p);
+  } else if (strcmp(iface, "zxdg_decoration_manager_v1") == 0) {
+    p->deco_mgr = wl_registry_bind(reg, name, &zxdg_decoration_manager_v1_interface, 1);
   } else if (strcmp(iface, "wl_seat") == 0) {
     p->seat = wl_registry_bind(reg, name, &wl_seat_interface, 5);
     wl_seat_add_listener(p->seat, &seat_listener, p);
@@ -531,6 +536,12 @@ Plat *plat_create(const char *title, int w, int h) {
   xdg_toplevel_set_title(p->top, title ? title : "mote");
   xdg_toplevel_set_app_id(p->top, "mote");
   xdg_toplevel_set_min_size(p->top, 200, 120);
+  /* No CSD of our own: without server-side decorations (e.g. GNOME) the window stays bare. */
+  if (p->deco_mgr) {
+    p->deco = zxdg_decoration_manager_v1_get_toplevel_decoration(p->deco_mgr, p->top);
+    zxdg_toplevel_decoration_v1_set_mode(p->deco,
+                                         ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+  }
   xdg_surface_set_window_geometry(p->xdgs, 0, 0, p->fb.w, p->fb.h);
   {
     struct wl_region *opaque = wl_compositor_create_region(p->comp);
@@ -557,6 +568,8 @@ void plat_destroy(Plat *p) {
   destroy_bufs(p);
   if (p->kb) wl_keyboard_destroy(p->kb);
   if (p->ptr) wl_pointer_destroy(p->ptr);
+  if (p->deco) zxdg_toplevel_decoration_v1_destroy(p->deco);
+  if (p->deco_mgr) zxdg_decoration_manager_v1_destroy(p->deco_mgr);
   if (p->top) xdg_toplevel_destroy(p->top);
   if (p->xdgs) xdg_surface_destroy(p->xdgs);
   if (p->surf) wl_surface_destroy(p->surf);
