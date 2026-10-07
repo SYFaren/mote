@@ -13,6 +13,7 @@
 #include "mote_snprintf.h"
 
 #define D(e) (&(e)->docs[(e)->cur])
+#define NO_POS ((size_t)-1) /* unset bookmark / bracket / search position */
 
 static const char *path_base(const char *name) {
   const char *a, *b, *best;
@@ -27,7 +28,7 @@ static const char *path_base(const char *name) {
 
 
 static void mark(Editor *e) { e->need_draw = MOTE_TRUE; }
-static void view_invalid(Doc *d) { d->row0_valid = MOTE_FALSE; }
+static void vrow_invalidate(Editor *e) { e->vrow_n = 0; }
 
 static const Theme *th(Editor *e) { return theme_get(e->theme_id); }
 
@@ -52,9 +53,15 @@ static size_t count_nl(const char *s, size_t n) {
   return c;
 }
 
+static size_t count_nl_buf(const Buf *b) {
+  size_t i, c = 0, len = buf_len(b);
+  for (i = 0; i < len; i++)
+    if (buf_at(b, i) == '\n') c++;
+  return c;
+}
+
 static void lines_mark_dirty(Doc *d) {
   d->lines.dirty = MOTE_TRUE;
-  d->row0_valid = MOTE_FALSE;
   d->hl_ml_valid = MOTE_FALSE;
 }
 
@@ -65,7 +72,7 @@ static void lines_shift(Doc *d, size_t pos, long delta) {
     if (d->lines.off[i] > pos)
       d->lines.off[i] = (size_t)((long)d->lines.off[i] + delta);
   }
-  d->row0_valid = MOTE_FALSE;
+  d->hl_ml_valid = MOTE_FALSE; /* the edit may open or close a block comment */
 }
 
 static mote_bool lines_push(LineMap *m, size_t off) {
@@ -101,16 +108,42 @@ static void set_status(Editor *e, const char *s) {
   mote_snprintf(e->status, sizeof e->status, "%s", s ? s : "");
   mark(e);
 }
-static void unsaved_ask(Editor *e, const char *verb) {
-  char b[72];
-  e->prompt[0] = 0;
-  mote_snprintf(b, sizeof b, "Unsaved — ^S %s  ^Q discard  Esc", verb);
-  set_status(e, b);
+
+static void set_statusf(Editor *e, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  mote_vsnprintf(e->status, sizeof e->status, fmt, ap);
+  va_end(ap);
+  mark(e);
 }
 
-static mote_bool prompt_accepts_input(EdMode mode) {
-  return mode == MODE_OPEN || mode == MODE_SAVEAS || mode == MODE_FIND ||
-         mode == MODE_REPLACE || mode == MODE_GOTO;
+static void toggle_flag(Editor *e, mote_bool *flag, const char *name) {
+  *flag = !*flag;
+  set_statusf(e, "%s %s", name, *flag ? "on" : "off");
+}
+
+/* Edits are refused on read-only docs; says so in the status bar. */
+static mote_bool editable(Editor *e, const Doc *d) {
+  if (!d->readonly) return MOTE_TRUE;
+  set_status(e, "readonly");
+  return MOTE_FALSE;
+}
+
+static void begin_mode(Editor *e, EdMode mode, const char *status) {
+  e->mode = mode;
+  e->prompt[0] = 0;
+  set_status(e, status);
+}
+
+static void leave_mode(Editor *e) {
+  e->mode = MODE_EDIT;
+  set_status(e, "F1 help");
+}
+
+static void unsaved_ask(Editor *e, EdMode mode, const char *verb) {
+  e->mode = mode;
+  e->prompt[0] = 0;
+  set_statusf(e, "Unsaved — ^S %s  ^Q discard  Esc", verb);
 }
 
 static const char *prompt_bar_prefix(EdMode mode) {
@@ -224,7 +257,7 @@ static void bm_clamp_rows(Doc *d) {
   ensure_lines(d);
   if (!d->lines.n) return;
   for (i = 0; i < MAX_BOOKMARKS; i++)
-    if (d->bm_row[i] != (size_t)-1 && d->bm_row[i] >= d->lines.n)
+    if (d->bm_row[i] != NO_POS && d->bm_row[i] >= d->lines.n)
       d->bm_row[i] = d->lines.n - 1;
 }
 
@@ -237,7 +270,7 @@ static void bm_line_insert(Doc *d, size_t pos, size_t nl_count) {
   rs = row_start(d, er);
   for (i = 0; i < MAX_BOOKMARKS; i++) {
     size_t br = d->bm_row[i];
-    if (br == (size_t)-1) continue;
+    if (br == NO_POS) continue;
     if (br > er)
       d->bm_row[i] = br + nl_count;
     else if (br == er && pos > rs)
@@ -253,7 +286,7 @@ static void bm_line_delete(Doc *d, size_t pos, size_t nl_count) {
   pos_to_rc(d, pos, &er, &ec);
   for (i = 0; i < MAX_BOOKMARKS; i++) {
     size_t br = d->bm_row[i];
-    if (br == (size_t)-1) continue;
+    if (br == NO_POS) continue;
     if (br > er + nl_count)
       d->bm_row[i] = br - nl_count;
     else if (br > er)
@@ -297,52 +330,31 @@ static size_t segs_of(Editor *e, Doc *d, size_t row) {
   return w == 0 ? 1 : (w + (size_t)e->cols - 1) / (size_t)e->cols;
 }
 
-static void caret_vis(Editor *e, Doc *d, size_t *vr, size_t *vc) {
-  size_t r;
-  *vr = 0;
-  for (r = 0; r < d->caret_row; r++) *vr += segs_of(e, d, r);
-  if (e->wrap && e->cols > 0) {
-    if (d->caret_col > 0 && (d->caret_col % (size_t)e->cols) == 0) {
-      *vr += d->caret_col / (size_t)e->cols - 1;
-      *vc = (size_t)e->cols; /* past last cell of segment */
-    } else {
-      *vr += d->caret_col / (size_t)e->cols;
-      *vc = d->caret_col % (size_t)e->cols;
-    }
-  } else {
-    *vc = d->caret_col;
-  }
-}
-
-static size_t view_vrow0(Editor *e, Doc *d) {
+/* First visual (wrapped) row of logical row `row`. `vp` is an optional
+   prefix-sum table from build_vrow_prefix; without it rows are summed. */
+static size_t vrow_of_row(Editor *e, Doc *d, size_t row, const size_t *vp) {
   size_t r, v = 0;
-  for (r = 0; r < d->row0; r++) v += segs_of(e, d, r);
-  return v + d->wrap0;
+  if (vp) return vp[row];
+  for (r = 0; r < row; r++) v += segs_of(e, d, r);
+  return v;
 }
 
-static size_t view_vrow0_vp(Editor *e, Doc *d, const size_t *vp) {
-  if (vp) return vp[d->row0] + d->wrap0;
-  return view_vrow0(e, d);
+static size_t view_vrow0(Editor *e, Doc *d, const size_t *vp) {
+  return vrow_of_row(e, d, d->row0, vp) + d->wrap0;
 }
 
-static void caret_vis_vp(Editor *e, Doc *d, size_t *vr, size_t *vc,
-                         const size_t *vp) {
-  if (vp) {
-    *vr = vp[d->caret_row];
-    if (e->wrap && e->cols > 0) {
-      if (d->caret_col > 0 && (d->caret_col % (size_t)e->cols) == 0) {
-        *vr += d->caret_col / (size_t)e->cols - 1;
-        *vc = (size_t)e->cols;
-      } else {
-        *vr += d->caret_col / (size_t)e->cols;
-        *vc = d->caret_col % (size_t)e->cols;
-      }
-    } else {
-      *vc = d->caret_col;
-    }
-    return;
+static void caret_vis(Editor *e, Doc *d, size_t *vr, size_t *vc, const size_t *vp) {
+  size_t cols = (size_t)e->cols;
+  *vr = vrow_of_row(e, d, d->caret_row, vp);
+  *vc = d->caret_col;
+  if (!e->wrap || e->cols < 1) return;
+  if (d->caret_col > 0 && d->caret_col % cols == 0) {
+    *vr += d->caret_col / cols - 1;
+    *vc = cols; /* past last cell of segment */
+  } else {
+    *vr += d->caret_col / cols;
+    *vc = d->caret_col % cols;
   }
-  caret_vis(e, d, vr, vc);
 }
 
 static size_t *build_vrow_prefix(Editor *e, Doc *d, size_t nlines) {
@@ -355,29 +367,23 @@ static size_t *build_vrow_prefix(Editor *e, Doc *d, size_t nlines) {
   return vp;
 }
 
+/* Scroll so visual row `want` is on top, clamped to the last segment. */
 static void set_view_vrow(Editor *e, Doc *d, size_t want) {
-  size_t r = 0, acc = 0, n, total = 0;
+  size_t r, s = 1, acc = 0, n;
   ensure_lines(d);
   n = d->lines.n ? d->lines.n : 1;
-  for (r = 0; r < n; r++) total += segs_of(e, d, r);
-  if (total == 0) total = 1;
-  if (want >= total) want = total - 1;
-  r = 0;
-  acc = 0;
-  while (r < n) {
-    size_t s = segs_of(e, d, r);
-    if (acc + s > want) {
-      d->row0 = r;
-      d->wrap0 = want - acc;
-      view_invalid(d);
-      return;
-    }
+  for (r = 0; r < n; r++) {
+    s = segs_of(e, d, r);
+    if (acc + s > want) break;
     acc += s;
-    r++;
   }
-  d->row0 = n ? n - 1 : 0;
-  d->wrap0 = 0;
-  view_invalid(d);
+  if (r == n) {
+    r = n - 1;
+    acc -= s;
+    want = acc + s - 1;
+  }
+  d->row0 = r;
+  d->wrap0 = want - acc;
 }
 
 static void sync_caret_rc(Doc *d) {
@@ -386,10 +392,10 @@ static void sync_caret_rc(Doc *d) {
 }
 
 static void ensure_visible(Editor *e, Doc *d) {
-  size_t vr, vc, top, old_r = d->row0, old_w = d->wrap0;
+  size_t vr, vc, top;
   if (e->wrap) d->col0 = 0;
-  caret_vis(e, d, &vr, &vc);
-  top = view_vrow0(e, d);
+  caret_vis(e, d, &vr, &vc, NULL);
+  top = view_vrow0(e, d, NULL);
   if (vr < top)
     set_view_vrow(e, d, vr);
   else if (e->rows > 0 && vr >= top + (size_t)e->rows)
@@ -399,7 +405,6 @@ static void ensure_visible(Editor *e, Doc *d) {
     if (e->cols > 0 && d->caret_col >= d->col0 + (size_t)e->cols)
       d->col0 = d->caret_col - (size_t)e->cols + 1;
   }
-  if (d->row0 != old_r || d->wrap0 != old_w) view_invalid(d);
 }
 
 static void clamp_caret(Doc *d) {
@@ -408,53 +413,42 @@ static void clamp_caret(Doc *d) {
   if (d->sel_anchor > len) d->sel_anchor = len;
 }
 
-static mote_bool can_edit(const Doc *d) { return !d->readonly; }
-
+/* Every buffer edit goes through push_delete / push_insert: they record
+   undo, keep bookmarks on their lines and patch the line map. */
 static mote_bool push_delete(Editor *e, Doc *d, size_t pos, size_t n) {
   char *t;
-  size_t i;
-  mote_bool has_nl = MOTE_FALSE;
-  if (!n || !can_edit(d)) return MOTE_FALSE;
+  size_t nl;
+  if (!n || d->readonly) return MOTE_FALSE;
   t = (char *)malloc(n);
   if (!t) {
     set_status(e, "out of memory");
     return MOTE_FALSE;
   }
   buf_get(&d->buf, pos, n, t);
-  for (i = 0; i < n; i++) {
-    if (t[i] == '\n') {
-      has_nl = MOTE_TRUE;
-      break;
-    }
-  }
+  nl = count_nl(t, n);
   if (!undo_push(&d->undo, U_DELETE, pos, t, n, MOTE_FALSE)) {
     free(t);
     set_status(e, "out of memory");
     return MOTE_FALSE;
   }
-  if (has_nl) bm_line_delete(d, pos, count_nl(t, n));
   free(t);
+  bm_line_delete(d, pos, nl);
   buf_delete(&d->buf, pos, n);
   d->dirty = MOTE_TRUE;
   clamp_caret(d);
-  if (has_nl) lines_mark_dirty(d);
+  vrow_invalidate(e);
+  if (nl) lines_mark_dirty(d);
   else lines_shift(d, pos, -(long)n);
   mark(e);
   return MOTE_TRUE;
 }
 
 static mote_bool push_insert(Editor *e, Doc *d, size_t pos, const char *s, size_t n,
-                        mote_bool coalesce) {
-  size_t i;
-  mote_bool has_nl = MOTE_FALSE;
-  if (!n || !s || !can_edit(d)) return MOTE_FALSE;
-  for (i = 0; i < n; i++) {
-    if (s[i] == '\n') {
-      has_nl = MOTE_TRUE;
-      break;
-    }
-  }
-  if (has_nl) bm_line_insert(d, pos, count_nl(s, n));
+                             mote_bool coalesce) {
+  size_t nl;
+  if (!n || !s || d->readonly) return MOTE_FALSE;
+  nl = count_nl(s, n);
+  bm_line_insert(d, pos, nl);
   if (!buf_insert(&d->buf, pos, s, n)) {
     set_status(e, "out of memory");
     return MOTE_FALSE;
@@ -466,18 +460,36 @@ static mote_bool push_insert(Editor *e, Doc *d, size_t pos, const char *s, size_
   }
   d->dirty = MOTE_TRUE;
   clamp_caret(d);
-  if (has_nl) {
+  vrow_invalidate(e);
+  if (nl) {
     lines_mark_dirty(d);
     bm_clamp_rows(d);
+  } else {
+    lines_shift(d, pos, (long)n);
   }
-  else lines_shift(d, pos, (long)n);
   mark(e);
   return MOTE_TRUE;
 }
 
+/* Put the caret at `pos` (extending the selection if `keep_sel`) and
+   scroll it into view. */
+static void move_caret(Editor *e, Doc *d, size_t pos, mote_bool keep_sel) {
+  d->caret = pos;
+  clamp_caret(d);
+  buf_seek(&d->buf, d->caret);
+  if (!keep_sel) clear_sel(d);
+  sync_caret_rc(d);
+  ensure_visible(e, d);
+  mark(e);
+}
+
+static void place_caret(Editor *e, Doc *d, size_t pos) {
+  move_caret(e, d, pos, MOTE_FALSE);
+}
+
 static void delete_sel(Editor *e, Doc *d) {
   size_t a, b;
-  if (!has_sel(d) || !can_edit(d)) return;
+  if (!has_sel(d) || d->readonly) return;
   a = sel_lo(d);
   b = sel_hi(d);
   push_delete(e, d, a, b - a);
@@ -486,50 +498,39 @@ static void delete_sel(Editor *e, Doc *d) {
   sync_caret_rc(d);
 }
 
-static void insert_text(Editor *e, Doc *d, const char *s, size_t n) {
-  mote_bool coal;
-  if (!can_edit(d)) {
-    set_status(e, "readonly");
-    return;
-  }
-  coal = (n <= 4 && n > 0 && s[0] != '\n' && s[0] != '\t');
+/* Replace the selection (if any) with `s` and put the caret after it. */
+static void insert_at_caret(Editor *e, Doc *d, const char *s, size_t n,
+                            mote_bool coalesce) {
+  if (!editable(e, d)) return;
   delete_sel(e, d);
-  push_insert(e, d, d->caret, s, n, coal);
-  d->caret += n;
-  clear_sel(d);
-  sync_caret_rc(d);
-  ensure_visible(e, d);
+  if (push_insert(e, d, d->caret, s, n, coalesce)) d->caret += n;
+  place_caret(e, d, d->caret);
 }
 
+static void insert_text(Editor *e, Doc *d, const char *s, size_t n) {
+  insert_at_caret(e, d, s, n, n > 0 && n <= 4 && s[0] != '\n' && s[0] != '\t');
+}
+
+/* Typing an opener inserts the pair; with a selection it wraps it. */
 static void insert_autoclose(Editor *e, Doc *d, char open, char close) {
   char pair[2];
-  if (!can_edit(d)) {
-    set_status(e, "readonly");
-    return;
-  }
-  if (has_sel(d)) {
-    size_t lo = sel_lo(d), hi = sel_hi(d);
-    pair[0] = open;
-    if (!push_insert(e, d, lo, pair, 1, MOTE_FALSE)) return;
-    hi += 1;
-    pair[0] = close;
-    if (!push_insert(e, d, hi, pair, 1, MOTE_FALSE)) return;
-    d->caret = lo + 1;
-    clear_sel(d);
-    sync_caret_rc(d);
-    ensure_visible(e, d);
-    return;
-  }
+  size_t lo, hi;
+  if (!editable(e, d)) return;
   pair[0] = open;
   pair[1] = close;
-  if (!push_insert(e, d, d->caret, pair, 2, MOTE_FALSE)) return;
-  d->caret += 1;
-  clear_sel(d);
-  sync_caret_rc(d);
-  ensure_visible(e, d);
+  if (!has_sel(d)) {
+    if (push_insert(e, d, d->caret, pair, 2, MOTE_FALSE)) d->caret++;
+    place_caret(e, d, d->caret);
+    return;
+  }
+  lo = sel_lo(d);
+  hi = sel_hi(d);
+  if (!push_insert(e, d, lo, &open, 1, MOTE_FALSE)) return;
+  if (!push_insert(e, d, hi + 1, &close, 1, MOTE_FALSE)) return;
+  place_caret(e, d, lo + 1);
 }
 
-static void apply_undo_act(Editor *e, Doc *d, UndoAct *a, int redo) {
+static void apply_undo_act(Editor *e, Doc *d, UndoAct *a, mote_bool redo) {
   if (a->kind == (redo ? U_INSERT : U_DELETE)) {
     bm_line_insert(d, a->pos, count_nl(a->text, a->len));
     if (!buf_insert(&d->buf, a->pos, a->text, a->len)) {
@@ -544,43 +545,17 @@ static void apply_undo_act(Editor *e, Doc *d, UndoAct *a, int redo) {
     buf_delete(&d->buf, a->pos, a->len);
     d->caret = a->pos;
   }
-  clear_sel(d);
-  clamp_caret(d);
-  sync_caret_rc(d);
   d->dirty = MOTE_TRUE;
-  ensure_visible(e, d);
   lines_mark_dirty(d);
-  mark(e);
+  vrow_invalidate(e);
+  place_caret(e, d, d->caret);
 }
 
-static void do_undo(Editor *e, Doc *d) {
+static void do_undo(Editor *e, Doc *d, mote_bool redo) {
   UndoAct *a;
-  if (!can_edit(d)) {
-    set_status(e, "readonly");
-    return;
-  }
-  a = undo_pop_undo(&d->undo);
-  if (a) apply_undo_act(e, d, a, 0);
-}
-
-static void do_redo(Editor *e, Doc *d) {
-  UndoAct *a;
-  if (!can_edit(d)) {
-    set_status(e, "readonly");
-    return;
-  }
-  a = undo_pop_redo(&d->undo);
-  if (a) apply_undo_act(e, d, a, 1);
-}
-
-static void move_caret(Editor *e, Doc *d, size_t np, mote_bool keep_sel) {
-  d->caret = np;
-  clamp_caret(d);
-  buf_seek(&d->buf, d->caret);
-  if (!keep_sel) clear_sel(d);
-  sync_caret_rc(d);
-  ensure_visible(e, d);
-  mark(e);
+  if (!editable(e, d)) return;
+  a = redo ? undo_pop_redo(&d->undo) : undo_pop_undo(&d->undo);
+  if (a) apply_undo_act(e, d, a, redo);
 }
 
 static size_t ed_prev(const Doc *d, size_t i) {
@@ -652,7 +627,7 @@ static void vis_to_pos(Editor *e, Doc *d, size_t vr, size_t vc, size_t *row,
 
 static void move_vert(Editor *e, Doc *d, int dy, mote_bool keep_sel) {
   size_t vr, vc, nrow, ncol, want;
-  caret_vis(e, d, &vr, &vc);
+  caret_vis(e, d, &vr, &vc, NULL);
   if (e->wrap && e->cols > 0)
     want = d->pref_col % (size_t)e->cols;
   else
@@ -701,76 +676,71 @@ static void recent_add(Editor *e, const char *path) {
   mote_snprintf(e->recent[0], sizeof e->recent[0], "%s", path);
 }
 
-static void normalize_eol(Doc *d) {
-  size_t i, len = buf_len(&d->buf), w = 0;
-  char *tmp;
-  Buf nb;
-  int crlf = 0, saw_cr = 0;
+/* Copy `src` into a fresh `out`, expanding LF to CRLF or collapsing
+   CRLF / lone CR to LF. */
+static mote_bool buf_convert_eol(const Buf *src, Buf *out, mote_bool to_crlf) {
+  size_t i, w = 0, len = buf_len(src);
+  size_t cap = to_crlf ? len + count_nl_buf(src) : len;
+  char *tmp = (char *)malloc(cap + 1);
+  mote_bool ok;
+  if (!tmp) return MOTE_FALSE;
   for (i = 0; i < len; i++) {
-    if (buf_at(&d->buf, i) == '\r') {
-      saw_cr = 1;
-      if (i + 1 < len && buf_at(&d->buf, i + 1) == '\n') crlf = 1;
+    char c = buf_at(src, i);
+    if (to_crlf) {
+      if (c == '\n') tmp[w++] = '\r';
+      tmp[w++] = c;
+    } else if (c != '\r') {
+      tmp[w++] = c;
+    } else if (i + 1 >= len || buf_at(src, i + 1) != '\n') {
+      tmp[w++] = '\n';
     }
   }
-  d->eol = crlf ? EOL_CRLF : EOL_LF;
-  if (!saw_cr) return; /* already LF-only — skip rebuild */
-  tmp = (char *)malloc(len + 1);
-  if (!tmp) return;
-  for (i = 0; i < len; i++) {
-    char c = buf_at(&d->buf, i);
-    if (c == '\r') {
-      if (i + 1 < len && buf_at(&d->buf, i + 1) == '\n') continue;
-      tmp[w++] = '\n';
-    } else
-      tmp[w++] = c;
-  }
-  if (!buf_init(&nb, w)) {
-    free(tmp);
-    return;
-  }
-  if (w && !buf_insert(&nb, 0, tmp, w)) {
-    buf_free(&nb);
-    free(tmp);
-    return;
+  ok = buf_init(out, w);
+  if (ok && w && !buf_insert(out, 0, tmp, w)) {
+    buf_free(out);
+    ok = MOTE_FALSE;
   }
   free(tmp);
+  return ok;
+}
+
+/* Remember the file's line ending and keep only LF in memory. */
+static void normalize_eol(Doc *d) {
+  size_t i, len = buf_len(&d->buf);
+  mote_bool saw_cr = MOTE_FALSE;
+  Buf nb;
+  d->eol = EOL_LF;
+  for (i = 0; i < len; i++) {
+    if (buf_at(&d->buf, i) != '\r') continue;
+    saw_cr = MOTE_TRUE;
+    if (i + 1 < len && buf_at(&d->buf, i + 1) == '\n') {
+      d->eol = EOL_CRLF;
+      break;
+    }
+  }
+  if (!saw_cr || !buf_convert_eol(&d->buf, &nb, MOTE_FALSE)) return;
   buf_free(&d->buf);
   d->buf = nb;
 }
 
 static mote_bool save_to(Editor *e, Doc *d, const char *path) {
+  mote_bool ok;
+  Buf crlf;
   if (!path || !path[0]) {
     set_status(e, "empty path");
     return MOTE_FALSE;
   }
   if (d->eol == EOL_CRLF) {
-    Buf tb;
-    size_t i, len = buf_len(&d->buf);
-    if (!buf_init(&tb, len + len / 8 + 8)) {
+    if (!buf_convert_eol(&d->buf, &crlf, MOTE_TRUE)) {
       set_status(e, "out of memory");
       return MOTE_FALSE;
     }
-    for (i = 0; i < len; i++) {
-      char c = buf_at(&d->buf, i);
-      if (c == '\n') {
-        if (!buf_insert(&tb, buf_len(&tb), "\r\n", 2)) {
-          buf_free(&tb);
-          set_status(e, "out of memory");
-          return MOTE_FALSE;
-        }
-      } else if (!buf_insert(&tb, buf_len(&tb), &c, 1)) {
-        buf_free(&tb);
-        set_status(e, "out of memory");
-        return MOTE_FALSE;
-      }
-    }
-    if (!buf_save(&tb, path)) {
-      buf_free(&tb);
-      set_status(e, "save failed");
-      return MOTE_FALSE;
-    }
-    buf_free(&tb);
-  } else if (!buf_save(&d->buf, path)) {
+    ok = buf_save(&crlf, path);
+    buf_free(&crlf);
+  } else {
+    ok = buf_save(&d->buf, path);
+  }
+  if (!ok) {
     set_status(e, "save failed");
     return MOTE_FALSE;
   }
@@ -783,11 +753,7 @@ static mote_bool save_to(Editor *e, Doc *d, const char *path) {
 
 static void try_save(Editor *e, Doc *d) {
   if (d->path[0]) save_to(e, d, d->path);
-  else {
-    e->mode = MODE_SAVEAS;
-    e->prompt[0] = 0;
-    set_status(e, "Save As:");
-  }
+  else begin_mode(e, MODE_SAVEAS, "Save As:");
 }
 
 static mote_bool match_at(Editor *e, Doc *d, size_t i, size_t *out_len) {
@@ -825,213 +791,157 @@ static void apply_match(Editor *e, Doc *d, size_t i, size_t flen, const char *ms
   set_status(e, msg);
 }
 
-static void find_next(Editor *e, Doc *d) {
-  size_t len, i, mlen;
+/* First (or, with `last`, final) match starting in [from, to). */
+static mote_bool scan_match(Editor *e, Doc *d, size_t from, size_t to,
+                            mote_bool last, size_t *pos, size_t *mlen) {
+  size_t i, n;
+  mote_bool found = MOTE_FALSE;
+  for (i = from; i < to; i = ed_next(d, i)) {
+    if (!match_at(e, d, i, &n)) continue;
+    *pos = i;
+    *mlen = n;
+    found = MOTE_TRUE;
+    if (!last) break;
+  }
+  return found;
+}
+
+static mote_bool find_ready(Editor *e, Doc *d) {
   if (!e->find[0]) {
     set_status(e, "no pattern");
-    return;
+    return MOTE_FALSE;
   }
-  len = buf_len(&d->buf);
-  if (!len) {
+  if (!buf_len(&d->buf)) {
     set_status(e, "not found");
-    return;
+    return MOTE_FALSE;
   }
-  i = d->caret < len ? ed_next(d, d->caret) : len;
-  for (; i < len; i = ed_next(d, i)) {
-    if (match_at(e, d, i, &mlen)) {
-      apply_match(e, d, i, mlen, "found");
-      return;
-    }
-  }
-  for (i = 0; i < len && i <= d->caret; i = ed_next(d, i)) {
-    if (match_at(e, d, i, &mlen)) {
-      apply_match(e, d, i, mlen, "found (wrap)");
-      return;
-    }
-  }
+  return MOTE_TRUE;
+}
+
+static void find_not_found(Editor *e, Doc *d) {
   d->match_a = d->match_b = 0;
   set_status(e, "not found");
+}
+
+static void find_next(Editor *e, Doc *d) {
+  size_t len, start, wrap_end, i, mlen;
+  if (!find_ready(e, d)) return;
+  len = buf_len(&d->buf);
+  start = d->caret < len ? ed_next(d, d->caret) : len;
+  wrap_end = d->caret < len ? d->caret + 1 : len;
+  if (scan_match(e, d, start, len, MOTE_FALSE, &i, &mlen))
+    apply_match(e, d, i, mlen, "found");
+  else if (scan_match(e, d, 0, wrap_end, MOTE_FALSE, &i, &mlen))
+    apply_match(e, d, i, mlen, "found (wrap)");
+  else
+    find_not_found(e, d);
 }
 
 static void find_prev(Editor *e, Doc *d) {
-  size_t len, i, lim, best = (size_t)-1, best_m = 0, mlen;
-  if (!e->find[0]) {
-    set_status(e, "no pattern");
-    return;
-  }
-  len = buf_len(&d->buf);
-  if (!len) {
-    set_status(e, "not found");
-    return;
-  }
+  size_t lim, i, mlen;
+  if (!find_ready(e, d)) return;
   lim = has_sel(d) ? sel_lo(d) : d->caret;
-  for (i = 0; i < lim; i = ed_next(d, i)) {
-    if (match_at(e, d, i, &mlen)) {
-      best = i;
-      best_m = mlen;
-    }
-  }
-  if (best != (size_t)-1) {
-    apply_match(e, d, best, best_m, "found");
-    return;
-  }
-  best = (size_t)-1;
-  for (i = 0; i < len; i = ed_next(d, i)) {
-    if (match_at(e, d, i, &mlen)) {
-      best = i;
-      best_m = mlen;
-    }
-  }
-  if (best != (size_t)-1) {
-    apply_match(e, d, best, best_m, "found (wrap)");
-    return;
-  }
-  d->match_a = d->match_b = 0;
-  set_status(e, "not found");
+  if (scan_match(e, d, 0, lim, MOTE_TRUE, &i, &mlen))
+    apply_match(e, d, i, mlen, "found");
+  else if (scan_match(e, d, 0, buf_len(&d->buf), MOTE_TRUE, &i, &mlen))
+    apply_match(e, d, i, mlen, "found (wrap)");
+  else
+    find_not_found(e, d);
 }
 
+static const char bracket_open[] = "([{";
+static const char bracket_close[] = ")]}";
+
+/* Bracket kind (index into bracket_open / bracket_close) and the scan
+   direction towards its partner: +1 from an opener, -1 from a closer. */
+static mote_bool bracket_kind(char ch, int *kind, int *dir) {
+  const char *p;
+  if (!ch) return MOTE_FALSE;
+  if ((p = strchr(bracket_open, ch)) != NULL) {
+    *kind = (int)(p - bracket_open);
+    *dir = 1;
+    return MOTE_TRUE;
+  }
+  if ((p = strchr(bracket_close, ch)) != NULL) {
+    *kind = (int)(p - bracket_close);
+    *dir = -1;
+    return MOTE_TRUE;
+  }
+  return MOTE_FALSE;
+}
+
+/* Bracket pair under the caret, or just before it, into bracket_a/_b. */
 static void find_bracket(Doc *d) {
-  static const char openers[] = "([{";
-  static const char closers[] = ")]}";
-  size_t len = buf_len(&d->buf), pos = d->caret;
+  size_t len = buf_len(&d->buf), pos = d->caret, i;
+  int kind, dir, depth = 0;
   char ch;
-  int dir, depth, i;
-  const char *pair;
-  d->bracket_a = d->bracket_b = (size_t)-1;
+  d->bracket_a = d->bracket_b = NO_POS;
   if (len == 0) return;
   if (pos >= len) pos = len - 1;
-  ch = buf_at(&d->buf, pos);
-  pair = strchr(openers, ch);
-  if (pair) {
-    dir = 1;
-    i = (int)(pair - openers);
-  } else {
-    pair = strchr(closers, ch);
-    if (!pair) {
-      if (pos == 0) return;
-      pos--;
-      ch = buf_at(&d->buf, pos);
-      pair = strchr(openers, ch);
-      if (pair) {
-        dir = 1;
-        i = (int)(pair - openers);
-      } else {
-        pair = strchr(closers, ch);
-        if (!pair) return;
-        dir = -1;
-        i = (int)(pair - closers);
-      }
-    } else {
-      dir = -1;
-      i = (int)(pair - closers);
-    }
+  if (!bracket_kind(buf_at(&d->buf, pos), &kind, &dir)) {
+    if (pos == 0 || !bracket_kind(buf_at(&d->buf, pos - 1), &kind, &dir)) return;
+    pos--;
   }
-  d->bracket_a = pos;
-  depth = 1;
-  for (;;) {
-    if (dir > 0) {
-      if (pos + 1 >= len) {
-        d->bracket_a = (size_t)-1;
-        return;
-      }
-      pos++;
-    } else {
-      if (pos == 0) {
-        d->bracket_a = (size_t)-1;
-        return;
-      }
-      pos--;
+  for (i = pos;; i = dir > 0 ? i + 1 : i - 1) {
+    ch = buf_at(&d->buf, i);
+    if (ch == bracket_open[kind]) depth += dir;
+    else if (ch == bracket_close[kind]) depth -= dir;
+    if (depth == 0) {
+      d->bracket_a = pos;
+      d->bracket_b = i;
+      return;
     }
-    ch = buf_at(&d->buf, pos);
-    if (ch == openers[i]) {
-      if (dir > 0)
-        depth++;
-      else if (--depth == 0) {
-        d->bracket_b = pos;
-        return;
-      }
-    } else if (ch == closers[i]) {
-      if (dir < 0)
-        depth++;
-      else if (--depth == 0) {
-        d->bracket_b = pos;
-        return;
-      }
-    }
+    if (dir > 0 ? i + 1 >= len : i == 0) return;
   }
 }
 
 static void do_replace_all(Editor *e, Doc *d) {
-  size_t rlen, i, count = 0, mlen;
-  if (!can_edit(d)) {
-    set_status(e, "readonly");
-    return;
-  }
+  size_t rlen, i = 0, count = 0, mlen;
+  if (!editable(e, d)) return;
   if (!e->find[0]) {
     set_status(e, "find first (Ctrl+F)");
     return;
   }
   rlen = strlen(e->replace);
-  i = 0;
   while (i < buf_len(&d->buf)) {
     if (!match_at(e, d, i, &mlen)) {
       i = ed_next(d, i);
       continue;
     }
-    if (!push_delete(e, d, i, mlen)) {
-      set_status(e, "replace aborted");
-      break;
-    }
-    if (rlen && !push_insert(e, d, i, e->replace, rlen, MOTE_FALSE)) {
+    if (!push_delete(e, d, i, mlen) ||
+        (rlen && !push_insert(e, d, i, e->replace, rlen, MOTE_FALSE))) {
       set_status(e, "replace aborted");
       break;
     }
     count++;
     i += rlen;
   }
-  clear_sel(d);
-  sync_caret_rc(d);
-  ensure_visible(e, d);
-  {
-    char msg[64];
-    mote_snprintf(msg, sizeof msg, "replaced %lu", (unsigned long)count);
-    set_status(e, msg);
-  }
-  mark(e);
+  place_caret(e, d, d->caret);
+  set_statusf(e, "replaced %lu", (unsigned long)count);
 }
 
-static int parse_slash_cmd(const char *in, char *pat, size_t patn, char *repl,
-                           size_t repln) {
-  const char *p, *q, *r;
-  size_t n;
-  if (!in || in[0] != '/' || !pat || patn < 2) return 0;
-  p = in + 1;
-  q = p;
-  while (*q && *q != '/') {
-    if (*q == '\\' && q[1]) q += 2;
-    else q++;
-  }
-  if (*q != '/') return 0;
-  n = (size_t)(q - p);
-  if (n >= patn) n = patn - 1;
-  memcpy(pat, p, n);
-  pat[n] = 0;
-  if (repl && repln) {
-    repl[0] = 0;
-    r = q + 1;
-    p = r;
-    while (*r && *r != '/') {
-      if (*r == '\\' && r[1]) r += 2;
-      else r++;
-    }
-    if (*r == '/') {
-      n = (size_t)(r - p);
-      if (n >= repln) n = repln - 1;
-      memcpy(repl, p, n);
-      repl[n] = 0;
-    }
-  }
-  return 1;
+/* Copy up to the next unescaped '/' into `out`; returns that '/' or NULL. */
+static const char *slash_field(const char *p, char *out, size_t n) {
+  const char *q = p;
+  size_t len;
+  while (*q && *q != '/') q += (*q == '\\' && q[1]) ? 2 : 1;
+  if (*q != '/') return NULL;
+  len = (size_t)(q - p);
+  if (len >= n) len = n - 1;
+  memcpy(out, p, len);
+  out[len] = 0;
+  return q;
+}
+
+/* "/pat/" or "/pat/repl/": regex find / replace typed into the prompt. */
+static mote_bool parse_slash_cmd(const char *in, char *pat, size_t patn, char *repl,
+                                 size_t repln) {
+  const char *q;
+  if (!in || in[0] != '/') return MOTE_FALSE;
+  q = slash_field(in + 1, pat, patn);
+  if (!q) return MOTE_FALSE;
+  if (!slash_field(q + 1, repl, repln)) repl[0] = 0;
+  return MOTE_TRUE;
 }
 
 static const char *comment_prefix(Doc *d) {
@@ -1042,100 +952,58 @@ static const char *comment_prefix(Doc *d) {
   return "//";
 }
 
-static size_t line_indent_pos(Doc *d, size_t row) {
-  size_t pos = row_start(d, row);
-  size_t end = line_end(d, pos);
-  while (pos < end) {
-    char c = buf_at(&d->buf, pos);
-    if (c != ' ' && c != '\t') break;
-    pos++;
-  }
-  return pos;
-}
-
-static void toggle_comment(Editor *e, Doc *d) {
-  size_t r0, r1, row, pos, pfxlen, end;
-  const char *pfx;
-  int all = 1, any = 0;
-  if (!can_edit(d)) {
-    set_status(e, "readonly");
+/* Rows covered by the selection, or just the caret row. */
+static void sel_rows(Doc *d, size_t *r0, size_t *r1) {
+  size_t col, hi = sel_hi(d);
+  if (!has_sel(d)) {
+    *r0 = *r1 = d->caret_row;
     return;
   }
+  pos_to_rc(d, sel_lo(d), r0, &col);
+  pos_to_rc(d, hi > 0 ? hi - 1 : hi, r1, &col);
+}
+
+/* Text of `row` after its indentation; false for blank lines. */
+static mote_bool line_body(Doc *d, size_t row, size_t *pos, size_t *end) {
+  size_t p = row_start(d, row);
+  *end = line_end(d, p);
+  while (p < *end && (buf_at(&d->buf, p) == ' ' || buf_at(&d->buf, p) == '\t')) p++;
+  *pos = p;
+  return p < *end;
+}
+
+/* Comments every non-blank line in range, or uncomments if all already are. */
+static void toggle_comment(Editor *e, Doc *d) {
+  size_t r0, r1, row, pos, end, n;
+  const char *pfx;
+  mote_bool any = MOTE_FALSE, all = MOTE_TRUE;
+  if (!editable(e, d)) return;
   pfx = comment_prefix(d);
-  pfxlen = strlen(pfx);
-  ensure_lines(d);
-  if (!has_sel(d)) {
-    r0 = r1 = d->caret_row;
-  } else {
-    pos_to_rc(d, sel_lo(d), &r0, &row);
-    pos_to_rc(d, sel_hi(d) > 0 ? sel_hi(d) - 1 : sel_hi(d), &r1, &row);
-    (void)row;
-  }
+  n = strlen(pfx);
+  sel_rows(d, &r0, &r1);
   for (row = r0; row <= r1; row++) {
-    size_t k;
-    pos = line_indent_pos(d, row);
-    end = line_end(d, row_start(d, row));
-    if (pos >= end) continue;
-    any = 1;
-    if ((size_t)(end - pos) < pfxlen) {
-      all = 0;
-      continue;
-    }
-    for (k = 0; k < pfxlen; k++) {
-      if (buf_at(&d->buf, pos + k) != pfx[k]) {
-        all = 0;
-        break;
-      }
-    }
+    if (!line_body(d, row, &pos, &end)) continue;
+    any = MOTE_TRUE;
+    if (end - pos < n || !buf_match(&d->buf, pos, pfx, n)) all = MOTE_FALSE;
   }
   if (!any) return;
   for (row = r0; row <= r1; row++) {
-    pos = line_indent_pos(d, row);
-    end = line_end(d, row_start(d, row));
-    if (pos >= end) continue;
-    if (all) {
-      size_t k;
-      for (k = 0; k < pfxlen; k++) {
-        if (pos + k >= end || buf_at(&d->buf, pos + k) != pfx[k]) break;
-      }
-      if (k == pfxlen) push_delete(e, d, pos, pfxlen);
-    } else {
-      push_insert(e, d, pos, pfx, pfxlen, MOTE_FALSE);
-    }
+    if (!line_body(d, row, &pos, &end)) continue;
+    if (all) push_delete(e, d, pos, n);
+    else push_insert(e, d, pos, pfx, n, MOTE_FALSE);
   }
   sync_caret_rc(d);
   ensure_visible(e, d);
   set_status(e, all ? "uncommented" : "commented");
-  mark(e);
 }
 
-static int fuzzy_score(const char *q, const char *name) {
-  int score = 0, streak = 0;
-  const char *p = q;
-  const char *s = name;
-  if (!q || !q[0]) return 0;
-  if (!name) return -1;
-  while (*p) {
-    char qc = *p;
-    char found = 0;
-    if (qc >= 'A' && qc <= 'Z') qc = (char)(qc - 'A' + 'a');
-    for (; *s; s++) {
-      char sc = *s;
-      if (sc >= 'A' && sc <= 'Z') sc = (char)(sc - 'A' + 'a');
-      if (sc == qc) {
-        found = 1;
-        break;
-      }
-    }
-    if (!found) return -1;
-    if (s == name) score += 20;
-    streak++;
-    score += 5 + streak;
-    p++;
-    s++;
+/* Case-insensitive subsequence match: "edc" matches "editor.c". */
+static mote_bool fuzzy_match(const char *q, const char *name) {
+  for (; *q; q++, name++) {
+    while (*name && tolower((unsigned char)*name) != tolower((unsigned char)*q)) name++;
+    if (!*name) return MOTE_FALSE;
   }
-  score -= (int)strlen(name) / 4;
-  return score;
+  return MOTE_TRUE;
 }
 
 static void path_dir_of(const char *path, char *dir, size_t n) {
@@ -1160,34 +1028,15 @@ static void path_dir_of(const char *path, char *dir, size_t n) {
   dir[len] = 0;
 }
 
-static void qf_sort_names(char names[][256], int n) {
-  int i, j;
-  for (i = 0; i + 1 < n; i++) {
-    for (j = i + 1; j < n; j++) {
-      if (strcmp(names[i], names[j]) > 0) {
-        char tmp[256];
-        memcpy(tmp, names[i], sizeof tmp);
-        memcpy(names[i], names[j], sizeof names[j]);
-        memcpy(names[j], tmp, sizeof tmp);
-      }
-    }
-  }
+static int cmp_name(const void *a, const void *b) {
+  return strcmp((const char *)a, (const char *)b);
 }
 
 static void quickopen_filter(Editor *e) {
   int i, n = 0;
-  const char *q = e->prompt;
   for (i = 0; i < e->qf_pool_n && n < QF_MAX; i++) {
-    int sc = fuzzy_score(q, e->qf_pool[i]);
-    if (sc < 0) continue;
-    mote_snprintf(e->qf_match[n], sizeof e->qf_match[0], "%s", e->qf_pool[i]);
-    n++;
-  }
-  if (!q[0]) {
-    n = e->qf_pool_n;
-    if (n > QF_MAX) n = QF_MAX;
-    for (i = 0; i < n; i++)
-      mote_snprintf(e->qf_match[i], sizeof e->qf_match[0], "%s", e->qf_pool[i]);
+    if (!fuzzy_match(e->prompt, e->qf_pool[i])) continue;
+    mote_snprintf(e->qf_match[n++], sizeof e->qf_match[0], "%s", e->qf_pool[i]);
   }
   e->qf_n = n;
   if (e->qf_sel >= n) e->qf_sel = n > 0 ? n - 1 : 0;
@@ -1196,27 +1045,18 @@ static void quickopen_filter(Editor *e) {
 static void quickopen_begin(Editor *e, Doc *d) {
   path_dir_of(d->path[0] ? d->path : ".", e->qf_dir, sizeof e->qf_dir);
   e->qf_pool_n = dirlist_files(e->qf_dir, e->qf_pool, QF_POOL);
-  qf_sort_names(e->qf_pool, e->qf_pool_n);
-  e->prompt[0] = 0;
+  qsort(e->qf_pool, (size_t)e->qf_pool_n, sizeof e->qf_pool[0], cmp_name);
   e->qf_sel = 0;
+  begin_mode(e, MODE_QUICKOPEN, "Go to file — type filter  j/k Enter");
   quickopen_filter(e);
-  e->mode = MODE_QUICKOPEN;
-  set_status(e, "Go to file — type filter  j/k Enter");
-  mark(e);
 }
 
 static void goto_line(Editor *e, Doc *d, size_t line1) {
-  size_t row;
+  size_t row = line1 > 0 ? line1 - 1 : 0;
   ensure_lines(d);
-  if (line1 == 0) line1 = 1;
-  row = line1 - 1;
   if (d->lines.n && row >= d->lines.n) row = d->lines.n - 1;
-  d->caret = row_start(d, row);
-  clear_sel(d);
-  sync_caret_rc(d);
-  ensure_visible(e, d);
+  place_caret(e, d, row_start(d, row));
   set_status(e, "ok");
-  mark(e);
 }
 
 static size_t bookmark_target_row(Doc *d) {
@@ -1233,127 +1073,112 @@ static size_t bookmark_target_row(Doc *d) {
   return row;
 }
 
-static void bookmark_toggle(Editor *e, Doc *d) {
-  size_t row;
+/* Slot holding a bookmark on `row`, or -1. */
+static int bm_find(const Doc *d, size_t row) {
   int i;
-  char msg[48];
-  row = bookmark_target_row(d);
-  for (i = 0; i < MAX_BOOKMARKS; i++) {
-    if (d->bm_row[i] == row) {
-      d->bm_row[i] = (size_t)-1;
-      set_status(e, "bookmark cleared");
-      mark(e);
-      return;
-    }
-  }
   for (i = 0; i < MAX_BOOKMARKS; i++)
-    if (d->bm_row[i] == (size_t)-1) break;
-  if (i >= MAX_BOOKMARKS) {
-    mote_snprintf(msg, sizeof msg, "max %d bookmarks, F8 on one clears it",
-                  MAX_BOOKMARKS);
-    set_status(e, msg);
+    if (d->bm_row[i] == row) return i;
+  return -1;
+}
+
+static void bookmark_toggle(Editor *e, Doc *d) {
+  size_t row = bookmark_target_row(d);
+  int i = bm_find(d, row);
+  if (i >= 0) {
+    d->bm_row[i] = NO_POS;
+    set_status(e, "bookmark cleared");
+    return;
+  }
+  i = bm_find(d, NO_POS);
+  if (i < 0) {
+    set_statusf(e, "max %d bookmarks, F8 on one clears it", MAX_BOOKMARKS);
     return;
   }
   d->bm_row[i] = row;
-  mote_snprintf(msg, sizeof msg, "bookmark set: line %lu", (unsigned long)(row + 1));
-  set_status(e, msg);
-  mark(e);
+  set_statusf(e, "bookmark set: line %lu", (unsigned long)(row + 1));
 }
 
 /* Closest bookmark to the caret line, ties going down. The caret's own
    line is only a target when it holds the sole bookmark. */
 static void bookmark_jump(Editor *e, Doc *d) {
-  size_t cur, r, dist, best = (size_t)-1, best_dist = 0;
-  mote_bool any = MOTE_FALSE;
+  size_t cur, r, dist, best = NO_POS, best_dist = 0;
   int i;
-  char msg[48];
   cur = bookmark_target_row(d);
   for (i = 0; i < MAX_BOOKMARKS; i++) {
     r = d->bm_row[i];
-    if (r == (size_t)-1) continue;
-    any = MOTE_TRUE;
-    if (r == cur) continue;
+    if (r == NO_POS || r == cur) continue;
     dist = r > cur ? r - cur : cur - r;
-    if (best == (size_t)-1 || dist < best_dist || (dist == best_dist && r > cur)) {
+    if (best == NO_POS || dist < best_dist || (dist == best_dist && r > cur)) {
       best = r;
       best_dist = dist;
     }
   }
-  if (!any) {
-    set_status(e, "no bookmarks (F8 sets one)");
-    return;
+  if (best == NO_POS) {
+    if (bm_find(d, cur) < 0) {
+      set_status(e, "no bookmarks (F8 sets one)");
+      return;
+    }
+    best = cur;
   }
-  if (best == (size_t)-1) best = cur;
-  d->caret = row_start(d, best);
-  clear_sel(d);
-  sync_caret_rc(d);
-  ensure_visible(e, d);
-  mote_snprintf(msg, sizeof msg, "bookmark: line %lu", (unsigned long)(best + 1));
-  set_status(e, msg);
-  mark(e);
+  place_caret(e, d, row_start(d, best));
+  set_statusf(e, "bookmark: line %lu", (unsigned long)(best + 1));
 }
 
+/* Enter keeps the current line's leading whitespace. */
 static void insert_newline_indent(Editor *e, Doc *d) {
-  size_t ls = line_start(d, d->caret);
-  size_t i = ls, n = 0;
+  size_t i = line_start(d, d->caret), n = 1;
   char ind[160];
   ind[0] = '\n';
-  n = 1;
-  while (i < d->caret && n + 1 < sizeof ind) {
-    char c = buf_at(&d->buf, i);
+  while (i < d->caret && n < sizeof ind) {
+    char c = buf_at(&d->buf, i++);
     if (c != ' ' && c != '\t') break;
     ind[n++] = c;
-    i++;
   }
   insert_text(e, d, ind, n);
 }
 
+/* Leading whitespace to strip when outdenting the line at `pos`:
+   one tab or up to four spaces. */
+static size_t outdent_width(const Doc *d, size_t pos) {
+  size_t n = 0, len = buf_len(&d->buf);
+  if (pos < len && buf_at(&d->buf, pos) == '\t') return 1;
+  while (n < 4 && pos + n < len && buf_at(&d->buf, pos + n) == ' ') n++;
+  return n;
+}
+
+/* Shift `p` left for `n` bytes deleted at `at`. */
+static size_t pos_after_delete(size_t p, size_t at, size_t n) {
+  if (p <= at) return p;
+  return p - (p - at < n ? p - at : n);
+}
+
+/* Tab / Shift+Tab: indent or outdent every selected line. Without a
+   selection Tab just inserts a tab. */
 static void indent_sel(Editor *e, Doc *d, int dir) {
-  size_t a, b, row, r0, r1, pos;
-  if (!can_edit(d)) {
-    set_status(e, "readonly");
+  size_t a = d->caret, b = d->caret, row, r0, r1, pos, n;
+  if (!editable(e, d)) return;
+  if (!has_sel(d) && dir > 0) {
+    insert_text(e, d, "\t", 1);
     return;
   }
-  if (!has_sel(d)) {
-    if (dir > 0) {
-      insert_text(e, d, "\t", 1);
-      return;
-    }
-    r0 = r1 = d->caret_row;
-    a = b = d->caret;
-  } else {
+  if (has_sel(d)) {
     a = sel_lo(d);
     b = sel_hi(d);
-    pos_to_rc(d, a, &r0, &row);
-    pos_to_rc(d, b > 0 ? b - 1 : b, &r1, &row);
-    (void)row;
   }
+  sel_rows(d, &r0, &r1);
   for (row = r0; row <= r1; row++) {
     pos = row_start(d, row);
     if (dir > 0) {
       if (!push_insert(e, d, pos, "\t", 1, MOTE_FALSE)) break;
       if (a >= pos) a++;
       b++;
-    } else {
-      char c0;
-      if (pos >= buf_len(&d->buf)) continue;
-      c0 = buf_at(&d->buf, pos);
-      if (c0 == '\t') {
-        if (!push_delete(e, d, pos, 1)) break;
-        if (a > pos) a--;
-        if (b > pos) b--;
-      } else if (c0 == ' ') {
-        size_t n = 0;
-        while (n < 4 && pos + n < buf_len(&d->buf) &&
-               buf_at(&d->buf, pos + n) == ' ')
-          n++;
-        if (n) {
-          if (!push_delete(e, d, pos, n)) break;
-          if (a > pos) a -= (a - pos < n ? a - pos : n);
-          if (b > pos) b -= (b - pos < n ? b - pos : n);
-        }
-      }
+      continue;
     }
+    n = outdent_width(d, pos);
+    if (!n) continue;
+    if (!push_delete(e, d, pos, n)) break;
+    a = pos_after_delete(a, pos, n);
+    b = pos_after_delete(b, pos, n);
   }
   d->sel_anchor = a;
   d->caret = b;
@@ -1364,74 +1189,38 @@ static void indent_sel(Editor *e, Doc *d, int dir) {
 
 static void delete_line(Editor *e, Doc *d) {
   size_t a, b, len;
-  if (!can_edit(d)) {
-    set_status(e, "readonly");
-    return;
-  }
+  if (!editable(e, d)) return;
   a = line_start(d, d->caret);
   b = line_end(d, d->caret);
   len = buf_len(&d->buf);
-  if (b < len && buf_at(&d->buf, b) == '\n') b++;
-  else if (a > 0 && b == len) {
-    a--; /* eat preceding newline if last line */
-  }
+  if (b < len) b++;           /* take the line's newline */
+  else if (a > 0) a--;        /* last line: take the newline before it */
   push_delete(e, d, a, b - a);
-  d->caret = a > len ? len : a;
-  if (d->caret > buf_len(&d->buf)) d->caret = buf_len(&d->buf);
-  clear_sel(d);
-  sync_caret_rc(d);
-  ensure_visible(e, d);
+  place_caret(e, d, a);
 }
 
+/* Duplicate the caret line below itself, keeping the caret column. */
 static void dup_line(Editor *e, Doc *d) {
-  size_t a, b, n;
+  size_t a, b, off;
   char *s;
-  if (!can_edit(d)) {
-    set_status(e, "readonly");
-    return;
-  }
+  mote_bool ok;
+  if (!editable(e, d)) return;
   a = line_start(d, d->caret);
   b = line_end(d, d->caret);
-  if (b < buf_len(&d->buf) && buf_at(&d->buf, b) == '\n') {
-    b++;
-    n = b - a;
-    s = slice_dup(d, a, b);
-    if (!s) return;
-    if (!push_insert(e, d, b, s, n, MOTE_FALSE)) {
-      free(s);
-      return;
-    }
-    free(s);
-    d->caret = b + (d->caret - a);
-  } else {
-    n = b - a;
-    s = slice_dup(d, a, b);
-    if (!s) return;
-    if (!push_insert(e, d, b, "\n", 1, MOTE_FALSE)) {
-      free(s);
-      return;
-    }
-    if (n && !push_insert(e, d, b + 1, s, n, MOTE_FALSE)) {
-      free(s);
-      return;
-    }
-    free(s);
-    d->caret = b + 1 + (d->caret - a);
-  }
-  clear_sel(d);
-  sync_caret_rc(d);
-  ensure_visible(e, d);
+  off = d->caret - a;
+  /* "\n<line>" inserted at the line end also works on the last line */
+  s = (char *)malloc(b - a + 1);
+  if (!s) return;
+  s[0] = '\n';
+  buf_get(&d->buf, a, b - a, s + 1);
+  ok = push_insert(e, d, b, s, b - a + 1, MOTE_FALSE);
+  free(s);
+  if (ok) place_caret(e, d, b + 1 + off);
 }
 
 static void cycle_theme(Editor *e) {
-  int n = theme_count();
-  e->theme_id = (e->theme_id + 1) % n;
-  {
-    char msg[64];
-    mote_snprintf(msg, sizeof msg, "theme: %s", theme_name(e->theme_id));
-    set_status(e, msg);
-  }
-  mark(e);
+  e->theme_id = (e->theme_id + 1) % theme_count();
+  set_statusf(e, "theme: %s", theme_name(e->theme_id));
 }
 
 static void copy_sel(Editor *e, Doc *d, Plat *p) {
@@ -1448,10 +1237,7 @@ static void copy_sel(Editor *e, Doc *d, Plat *p) {
 }
 
 static void cut_sel(Editor *e, Doc *d, Plat *p) {
-  if (!can_edit(d)) {
-    set_status(e, "readonly");
-    return;
-  }
+  if (!editable(e, d)) return;
   copy_sel(e, d, p);
   delete_sel(e, d);
   ensure_visible(e, d);
@@ -1460,28 +1246,15 @@ static void cut_sel(Editor *e, Doc *d, Plat *p) {
 static void paste_clip(Editor *e, Doc *d, Plat *p) {
   size_t n = 0, room;
   char *s;
-  if (!can_edit(d)) {
-    set_status(e, "readonly");
-    return;
-  }
+  if (!editable(e, d)) return;
   s = plat_clipboard_get(p, &n);
   if (!s) return;
   room = MOTE_MAX_FILE - buf_len(&d->buf);
   if (n > room) {
-    if (!room) {
-      set_status(e, "file at size limit");
-      free(s);
-      return;
-    }
     n = room;
-    set_status(e, "paste truncated");
+    set_status(e, room ? "paste truncated" : "file at size limit");
   }
-  delete_sel(e, d);
-  push_insert(e, d, d->caret, s, n, MOTE_FALSE);
-  d->caret += n;
-  clear_sel(d);
-  sync_caret_rc(d);
-  ensure_visible(e, d);
+  if (n) insert_at_caret(e, d, s, n, MOTE_FALSE);
   free(s);
 }
 
@@ -1492,18 +1265,22 @@ static size_t click_to_pos(Editor *e, Doc *d, int mx, int my) {
   if (e->rows > 0 && my >= e->rows * e->ch) my = e->rows * e->ch - 1;
   mx -= e->gutter;
   if (mx < 0) mx = 0;
-  vr = view_vrow0(e, d) + (size_t)(my / e->ch);
+  vr = view_vrow0(e, d, NULL) + (size_t)(my / e->ch);
   vc = e->wrap ? (size_t)(mx / e->cw) : d->col0 + (size_t)(mx / e->cw);
   vis_to_pos(e, d, vr, vc, &row, &col);
   return rc_to_pos(d, row, col);
 }
 
-static void doc_reset(Doc *d) {
+static void bm_clear_all(Doc *d) {
   int i;
+  for (i = 0; i < MAX_BOOKMARKS; i++) d->bm_row[i] = NO_POS;
+}
+
+static void doc_reset(Doc *d) {
   memset(d, 0, sizeof *d);
   d->lines.dirty = MOTE_TRUE;
-  d->bracket_a = d->bracket_b = (size_t)-1;
-  for (i = 0; i < MAX_BOOKMARKS; i++) d->bm_row[i] = (size_t)-1;
+  d->bracket_a = d->bracket_b = NO_POS;
+  bm_clear_all(d);
   d->eol = EOL_LF;
 }
 
@@ -1522,17 +1299,36 @@ static void doc_free(Doc *d) {
   d->lines.n = d->lines.capa = 0;
 }
 
-static int any_dirty(const Editor *e);
+/* Swap in new contents and reset everything tied to the old text. */
+static void doc_set_contents(Doc *d, Buf *nb, const char *path) {
+  buf_free(&d->buf);
+  d->buf = *nb;
+  mote_snprintf(d->path, sizeof d->path, "%s", path);
+  d->dirty = d->readonly = MOTE_FALSE;
+  d->eol = EOL_LF;
+  d->caret = d->sel_anchor = d->pref_col = 0;
+  d->row0 = d->col0 = d->wrap0 = 0;
+  d->caret_row = d->caret_col = 0;
+  d->match_a = d->match_b = 0;
+  d->bracket_a = d->bracket_b = NO_POS;
+  bm_clear_all(d);
+  lines_mark_dirty(d);
+  undo_free(&d->undo);
+  undo_init(&d->undo);
+}
+
+static mote_bool any_dirty(const Editor *e) {
+  int i;
+  for (i = 0; i < e->ndocs; i++)
+    if (e->docs[i].dirty) return MOTE_TRUE;
+  return MOTE_FALSE;
+}
 
 mote_bool ed_init(Editor *e) {
   memset(e, 0, sizeof *e);
   e->ndocs = 1;
-  e->cur = 0;
   if (!doc_init_empty(D(e))) return MOTE_FALSE;
-  e->theme_id = 0;
-  e->status[0] = 0;
   e->need_draw = MOTE_TRUE;
-  if (getenv("MOTE_START_HELP")) e->mode = MODE_HELP;
   return MOTE_TRUE;
 }
 
@@ -1543,22 +1339,22 @@ void ed_free(Editor *e) {
   for (i = 0; i < e->ndocs; i++) doc_free(&e->docs[i]);
 }
 
+/* Opens into the current doc; a dirty one gets a new tab, or a
+   save / discard question once all MAX_DOCS tabs are taken. A missing
+   file opens as a new empty one. */
 mote_bool ed_open_path(Editor *e, const char *path) {
   Doc *d = D(e);
   Buf nb;
-
+  mote_bool exists = MOTE_TRUE;
   if (d->dirty) {
-    if (e->ndocs < MAX_DOCS) {
-      ed_new_doc(e);
-      d = D(e);
-    } else {
+    if (e->ndocs >= MAX_DOCS) {
       mote_snprintf(e->pending_path, sizeof e->pending_path, "%s", path);
-      e->mode = MODE_OPENASK;
-      unsaved_ask(e, "open");
+      unsaved_ask(e, MODE_OPENASK, "open");
       return MOTE_FALSE;
     }
+    ed_new_doc(e);
+    d = D(e);
   }
-
   if (!buf_init(&nb, 0)) {
     set_status(e, "out of memory");
     return MOTE_FALSE;
@@ -1570,48 +1366,29 @@ mote_bool ed_open_path(Editor *e, const char *path) {
       set_status(e, "open failed");
       return MOTE_FALSE;
     }
-    buf_free(&d->buf);
-    if (!buf_init(&d->buf, 0)) return MOTE_FALSE;
-    mote_snprintf(d->path, sizeof d->path, "%s", path);
-    d->dirty = MOTE_FALSE;
-    d->readonly = MOTE_FALSE;
-    d->eol = EOL_LF;
-    d->caret = d->sel_anchor = 0;
-    d->row0 = d->col0 = d->wrap0 = 0;
-    d->caret_row = d->caret_col = 0;
-    lines_mark_dirty(d);
-    undo_free(&d->undo);
-    undo_init(&d->undo);
-    recent_add(e, path);
-    set_status(e, "new file");
-    return MOTE_TRUE;
+    if (!buf_init(&nb, 0)) {
+      set_status(e, "out of memory");
+      return MOTE_FALSE;
+    }
+    exists = MOTE_FALSE;
   }
-  buf_free(&d->buf);
-  d->buf = nb;
-  normalize_eol(d);
-  mote_snprintf(d->path, sizeof d->path, "%s", path);
-  d->dirty = MOTE_FALSE;
-  d->readonly = MOTE_FALSE;
-  d->caret = d->sel_anchor = 0;
-  d->row0 = d->col0 = d->wrap0 = 0;
-  d->caret_row = d->caret_col = 0;
-  lines_mark_dirty(d);
-  undo_free(&d->undo);
-  undo_init(&d->undo);
+  doc_set_contents(d, &nb, path);
+  if (exists) normalize_eol(d);
+  vrow_invalidate(e);
   recent_add(e, path);
-  set_status(e, "opened");
+  set_status(e, exists ? "opened" : "new file");
   return MOTE_TRUE;
+}
+
+static void doc_status(Editor *e) {
+  set_statusf(e, "doc %d/%d", e->cur + 1, e->ndocs);
 }
 
 static void switch_doc(Editor *e, int idx) {
   if (idx < 0 || idx >= e->ndocs) return;
   e->cur = idx;
-  {
-    char msg[48];
-    mote_snprintf(msg, sizeof msg, "doc %d/%d", e->cur + 1, e->ndocs);
-    set_status(e, msg);
-  }
-  mark(e);
+  vrow_invalidate(e);
+  doc_status(e);
 }
 
 void ed_new_doc(Editor *e) {
@@ -1624,74 +1401,117 @@ void ed_new_doc(Editor *e) {
     return;
   }
   e->cur = e->ndocs++;
+  vrow_invalidate(e);
   set_status(e, "new doc");
-  mark(e);
 }
 
+/* Close the current doc without asking; the last one becomes empty. */
 static void close_doc_force(Editor *e) {
   Doc *d = D(e);
+  doc_free(d);
+  vrow_invalidate(e);
   if (e->ndocs <= 1) {
-    doc_free(d);
-    if (!doc_init_empty(d)) {
-      set_status(e, "out of memory");
-      return;
-    }
-    set_status(e, "closed");
-    mark(e);
+    set_status(e, doc_init_empty(d) ? "closed" : "out of memory");
     return;
   }
-  doc_free(d);
-  if (e->cur < e->ndocs - 1)
-    memmove(&e->docs[e->cur], &e->docs[e->cur + 1],
-            (size_t)(e->ndocs - e->cur - 1) * sizeof e->docs[0]);
+  memmove(&e->docs[e->cur], &e->docs[e->cur + 1],
+          (size_t)(e->ndocs - e->cur - 1) * sizeof e->docs[0]);
   e->ndocs--;
   if (e->cur >= e->ndocs) e->cur = e->ndocs - 1;
-  {
-    char msg[48];
-    mote_snprintf(msg, sizeof msg, "doc %d/%d", e->cur + 1, e->ndocs);
-    set_status(e, msg);
-  }
-  mark(e);
+  doc_status(e);
 }
 
 static void close_doc(Editor *e) {
-  Doc *d = D(e);
-  if (d->dirty) {
-    e->mode = MODE_CLOSEASK;
-    unsaved_ask(e, "close");
-    return;
-  }
-  close_doc_force(e);
+  if (D(e)->dirty) unsaved_ask(e, MODE_CLOSEASK, "close");
+  else close_doc_force(e);
 }
 
-static void finish_quit_saves(Editor *e) {
+static void request_quit(Editor *e) {
+  if (any_dirty(e)) unsaved_ask(e, MODE_QUITASK, "quit");
+  else e->want_quit = MOTE_TRUE;
+}
+
+/* Save every dirty doc, then quit; an untitled one asks Save As first
+   and resumes the quit from there. */
+static void save_all_and_quit(Editor *e) {
   int i;
   for (i = 0; i < e->ndocs; i++) {
-    if (!e->docs[i].dirty) continue;
-    if (!e->docs[i].path[0]) {
+    Doc *d = &e->docs[i];
+    if (!d->dirty) continue;
+    if (!d->path[0]) {
       e->cur = i;
-      e->quit_after_save = MOTE_TRUE;
-      e->mode = MODE_SAVEAS;
-      e->prompt[0] = 0;
-      set_status(e, "Save As:");
+      e->pending = PENDING_QUIT;
+      begin_mode(e, MODE_SAVEAS, "Save As:");
       return;
     }
-    if (!save_to(e, &e->docs[i], e->docs[i].path)) return;
+    if (!save_to(e, d, d->path)) return;
   }
-  e->quit_after_save = MOTE_FALSE;
-  if (!any_dirty(e)) e->want_quit = MOTE_TRUE;
+  e->want_quit = MOTE_TRUE;
+}
+
+static void drop_pending(Editor *e) {
+  e->pending = PENDING_NONE;
+  e->pending_path[0] = 0;
+}
+
+/* Run the quit / open / close that waited on an unsaved doc. */
+static void finish_pending(Editor *e) {
+  PendingAction act = e->pending;
+  char path[sizeof e->pending_path];
+  mote_snprintf(path, sizeof path, "%s", e->pending_path);
+  drop_pending(e);
+  e->mode = MODE_EDIT;
+  switch (act) {
+  case PENDING_QUIT: save_all_and_quit(e); break;
+  case PENDING_OPEN: if (path[0]) ed_open_path(e, path); break;
+  case PENDING_CLOSE: close_doc_force(e); break;
+  default: break;
+  }
+}
+
+/* The "Unsaved — ^S save  ^Q discard  Esc" question. */
+static void handle_ask(Editor *e, Doc *d, const PlatEvent *ev) {
+  PendingAction act = e->mode == MODE_QUITASK   ? PENDING_QUIT
+                      : e->mode == MODE_OPENASK ? PENDING_OPEN
+                                                : PENDING_CLOSE;
+  if (ev->type != PE_KEY) return;
+  switch (ev->key) {
+  case PK_QUIT:
+    if (act == PENDING_QUIT) {
+      e->want_quit = MOTE_TRUE;
+      return;
+    }
+    d->dirty = MOTE_FALSE;
+    e->pending = act;
+    finish_pending(e);
+    break;
+  case PK_SAVE:
+    if (act == PENDING_QUIT) {
+      save_all_and_quit(e);
+    } else if (!d->path[0]) {
+      e->pending = act;
+      begin_mode(e, MODE_SAVEAS, "Save As:");
+    } else if (save_to(e, d, d->path)) {
+      e->pending = act;
+      finish_pending(e);
+    }
+    break;
+  case PK_ESCAPE:
+    drop_pending(e);
+    leave_mode(e);
+    break;
+  default:
+    break;
+  }
 }
 
 static void jump_bracket(Editor *e, Doc *d) {
   find_bracket(d);
-  if (d->bracket_a == (size_t)-1 || d->bracket_b == (size_t)-1) {
+  if (d->bracket_a == NO_POS) {
     set_status(e, "no match");
     return;
   }
-  if (d->caret == d->bracket_b)
-    move_caret(e, d, d->bracket_a, MOTE_FALSE);
-  else
-    move_caret(e, d, d->bracket_b, MOTE_FALSE);
+  move_caret(e, d, d->caret == d->bracket_b ? d->bracket_a : d->bracket_b, MOTE_FALSE);
 }
 
 static void reload_doc(Editor *e, Doc *d) {
@@ -1703,634 +1523,379 @@ static void reload_doc(Editor *e, Doc *d) {
     set_status(e, "save first");
     return;
   }
-  ed_open_path(e, d->path);
-  set_status(e, "reloaded");
+  if (ed_open_path(e, d->path)) set_status(e, "reloaded");
 }
 
-static void find_sync_prompt(Editor *e) {
-  char pat[192], repl[192];
-  if (e->mode != MODE_FIND && e->mode != MODE_REPLACE) return;
+static void toggle_eol(Editor *e, Doc *d) {
+  d->eol = d->eol == EOL_LF ? EOL_CRLF : EOL_LF;
+  d->dirty = MOTE_TRUE;
+  set_status(e, d->eol == EOL_CRLF ? "eol CRLF" : "eol LF");
+}
+
+static void toggle_wrap(Editor *e, Doc *d) {
+  toggle_flag(e, &e->wrap, "wrap");
+  vrow_invalidate(e);
+  if (e->wrap) d->col0 = d->wrap0 = 0;
+  ensure_visible(e, d);
+}
+
+static void zoom(Editor *e, Plat *p, int delta) {
+  plat_set_font_px(p, delta ? plat_font_px(p) + delta : MOTE_FONT_PX);
+  set_status(e, delta > 0 ? "zoom+" : delta < 0 ? "zoom-" : "zoom reset");
+}
+
+static void select_all(Editor *e, Doc *d) {
+  d->sel_anchor = 0;
+  d->caret = buf_len(&d->buf);
+  sync_caret_rc(d);
+  mark(e);
+}
+
+static void delete_back(Editor *e, Doc *d) {
+  size_t np;
+  if (!editable(e, d)) return;
+  if (has_sel(d)) {
+    delete_sel(e, d);
+  } else if (d->caret > 0) {
+    np = ed_prev(d, d->caret);
+    if (push_delete(e, d, np, d->caret - np)) d->caret = np;
+  }
+  place_caret(e, d, d->caret);
+}
+
+static void delete_fwd(Editor *e, Doc *d) {
+  if (!editable(e, d)) return;
+  if (has_sel(d)) delete_sel(e, d);
+  else if (d->caret < buf_len(&d->buf))
+    push_delete(e, d, d->caret, ed_next(d, d->caret) - d->caret);
+  place_caret(e, d, d->caret);
+}
+
+/* --- prompts (Open, Save As, Find, Replace, Goto) --- */
+
+static mote_bool prompt_append(Editor *e, const char *s, int n) {
+  size_t len = strlen(e->prompt);
+  if (n <= 0 || len + (size_t)n >= sizeof e->prompt - 1) return MOTE_FALSE;
+  memcpy(e->prompt + len, s, (size_t)n);
+  e->prompt[len + (size_t)n] = 0;
+  mark(e);
+  return MOTE_TRUE;
+}
+
+static mote_bool prompt_backspace(Editor *e) {
+  size_t n = strlen(e->prompt);
+  if (!n) return MOTE_FALSE;
+  e->prompt[utf8_prev(e->prompt, n)] = 0;
+  mark(e);
+  return MOTE_TRUE;
+}
+
+static void find_begin(Editor *e, Doc *d) {
+  begin_mode(e, MODE_FIND, "Find: /re/ or text  Alt+C case  Alt+W word");
+  mote_snprintf(e->prompt, sizeof e->prompt, e->find_regex ? "/%s/" : "%s", e->find);
+  d->match_a = d->match_b = 0;
+}
+
+/* Find prompt -> search pattern: "/re/" is a regex, anything else text. */
+static void find_from_prompt(Editor *e) {
+  char pat[sizeof e->find], repl[sizeof e->replace];
+  e->find_regex = parse_slash_cmd(e->prompt, pat, sizeof pat, repl, sizeof repl);
+  mote_snprintf(e->find, sizeof e->find, "%s", e->find_regex ? pat : e->prompt);
+}
+
+/* Replace prompt: "/find/repl/" sets both (regex), plain text is the
+   replacement for the current find pattern. */
+static void replace_from_prompt(Editor *e) {
+  char pat[sizeof e->find], repl[sizeof e->replace];
   if (parse_slash_cmd(e->prompt, pat, sizeof pat, repl, sizeof repl)) {
     mote_snprintf(e->find, sizeof e->find, "%s", pat);
+    mote_snprintf(e->replace, sizeof e->replace, "%s", repl);
     e->find_regex = MOTE_TRUE;
   } else {
-    mote_snprintf(e->find, sizeof e->find, "%.255s", e->prompt);
-    e->find_regex = MOTE_FALSE;
+    mote_snprintf(e->replace, sizeof e->replace, "%s", e->prompt);
   }
 }
 
-static mote_bool handle_global_keys(Editor *e, Doc *d, const PlatEvent *ev) {
-  if (ev->type != PE_KEY) return MOTE_FALSE;
-  switch (ev->key) {
-  case PK_BOOKMARK_SET:
-    bookmark_toggle(e, d);
-    return MOTE_TRUE;
-  case PK_BOOKMARK:
-    bookmark_jump(e, d);
-    return MOTE_TRUE;
-  case PK_FINDCASE:
-    e->find_case = !e->find_case;
-    set_status(e, e->find_case ? "find: case on" : "find: case off");
-    return MOTE_TRUE;
-  case PK_FINDWORD:
-    e->find_word = !e->find_word;
-    set_status(e, e->find_word ? "find: word on" : "find: word off");
-    return MOTE_TRUE;
-  case PK_FINDNEXT:
-    find_sync_prompt(e);
-    if (e->find[0]) find_next(e, d);
-    else set_status(e, "type pattern, Enter");
-    return MOTE_TRUE;
-  case PK_FINDPREV:
-    find_sync_prompt(e);
-    if (e->find[0]) find_prev(e, d);
-    else set_status(e, "type pattern, Enter");
-    return MOTE_TRUE;
-  default:
-    return MOTE_FALSE;
-  }
-}
-
-static void prompt_enter(Editor *e) {
-  Doc *d = D(e);
-  if (e->mode == MODE_OPEN) {
+static void prompt_enter(Editor *e, Doc *d) {
+  EdMode mode = e->mode;
+  e->mode = MODE_EDIT;
+  switch (mode) {
+  case MODE_OPEN:
     if (e->prompt[0]) ed_open_path(e, e->prompt);
-    e->mode = MODE_EDIT;
-  } else if (e->mode == MODE_SAVEAS) {
-    if (e->prompt[0] && save_to(e, d, e->prompt)) {
-      if (e->quit_after_save) {
-        e->quit_after_save = MOTE_FALSE;
-        finish_quit_saves(e);
-        mark(e);
-        return;
-      }
-      if (e->close_after_save) {
-        e->close_after_save = MOTE_FALSE;
-        e->mode = MODE_EDIT;
-        close_doc_force(e);
-        mark(e);
-        return;
-      }
-      if (e->pending_path[0]) {
-        char path[1024];
-        mote_snprintf(path, sizeof path, "%s", e->pending_path);
-        e->pending_path[0] = 0;
-        e->mode = MODE_EDIT;
-        ed_open_path(e, path);
-        mark(e);
-        return;
-      }
-    }
-    e->mode = MODE_EDIT;
-  } else if (e->mode == MODE_FIND) {
-    find_sync_prompt(e);
-    e->mode = MODE_EDIT;
+    break;
+  case MODE_SAVEAS:
+    if (e->prompt[0] && save_to(e, d, e->prompt)) finish_pending(e);
+    else drop_pending(e);
+    break;
+  case MODE_FIND:
+    find_from_prompt(e);
     find_next(e, d);
-  } else if (e->mode == MODE_REPLACE) {
-    char pat[192], repl[192];
-    if (parse_slash_cmd(e->prompt, pat, sizeof pat, repl, sizeof repl)) {
-      mote_snprintf(e->find, sizeof e->find, "%s", pat);
-      mote_snprintf(e->replace, sizeof e->replace, "%s", repl);
-      e->find_regex = MOTE_TRUE;
-    } else {
-      mote_snprintf(e->replace, sizeof e->replace, "%.255s", e->prompt);
-    }
-    e->mode = MODE_EDIT;
+    break;
+  case MODE_REPLACE:
+    replace_from_prompt(e);
     do_replace_all(e, d);
-  } else if (e->mode == MODE_GOTO) {
-    size_t line = (size_t)strtoul(e->prompt, NULL, 10);
-    e->mode = MODE_EDIT;
-    goto_line(e, d, line);
+    break;
+  case MODE_GOTO:
+    goto_line(e, d, (size_t)strtoul(e->prompt, NULL, 10));
+    break;
+  default:
+    break;
   }
   mark(e);
 }
 
-static void handle_prompt(Editor *e, const PlatEvent *ev) {
-  Doc *d = D(e);
-  size_t n;
-  if (handle_global_keys(e, d, ev)) return;
+static void handle_prompt(Editor *e, Doc *d, const PlatEvent *ev) {
   if (ev->type == PE_KEY) {
     if (ev->key == PK_ESCAPE) {
-      e->mode = MODE_EDIT;
-      set_status(e, "F1 help");
-      return;
+      drop_pending(e);
+      leave_mode(e);
+    } else if (ev->key == PK_ENTER) {
+      prompt_enter(e, d);
+    } else if (ev->key == PK_BACKSPACE) {
+      prompt_backspace(e);
     }
-    if (ev->key == PK_ENTER) {
-      prompt_enter(e);
-      return;
-    }
-    if (ev->key == PK_BACKSPACE) {
-      if (!prompt_accepts_input(e->mode)) return;
-      n = strlen(e->prompt);
-      if (n) {
-        n = utf8_prev(e->prompt, n);
-        e->prompt[n] = 0;
-        mark(e);
-      }
-      return;
-    }
+    return;
   }
-  if (ev->type == PE_TEXT && ev->text_len > 0 && prompt_accepts_input(e->mode)) {
-    n = strlen(e->prompt);
-    if ((e->mode == MODE_FIND || e->mode == MODE_REPLACE) && n > 0 &&
-        ev->text[0] == '/' && e->prompt[0] != '/') {
-      e->prompt[0] = 0;
-      n = 0;
-    }
-    if (n + (size_t)ev->text_len < sizeof e->prompt - 1) {
-      memcpy(e->prompt + n, ev->text, (size_t)ev->text_len);
-      e->prompt[n + (size_t)ev->text_len] = 0;
-      mark(e);
-    }
-  }
+  if (ev->type != PE_TEXT || ev->text_len <= 0) return;
+  /* '/' typed into a plain-text find starts over as a regex */
+  if ((e->mode == MODE_FIND || e->mode == MODE_REPLACE) && ev->text[0] == '/' &&
+      e->prompt[0] && e->prompt[0] != '/')
+    e->prompt[0] = 0;
+  prompt_append(e, ev->text, ev->text_len);
 }
 
-static int any_dirty(const Editor *e) {
-  int i;
-  for (i = 0; i < e->ndocs; i++)
-    if (e->docs[i].dirty) return 1;
-  return 0;
+/* Keys that work both while editing and inside a prompt. */
+static mote_bool handle_global_keys(Editor *e, Doc *d, const PlatEvent *ev) {
+  if (ev->type != PE_KEY) return MOTE_FALSE;
+  switch (ev->key) {
+  case PK_BOOKMARK_SET: bookmark_toggle(e, d); break;
+  case PK_BOOKMARK: bookmark_jump(e, d); break;
+  case PK_FINDCASE: toggle_flag(e, &e->find_case, "find: case"); break;
+  case PK_FINDWORD: toggle_flag(e, &e->find_word, "find: word"); break;
+  case PK_FINDNEXT:
+  case PK_FINDPREV:
+    if (e->mode == MODE_FIND) find_from_prompt(e);
+    if (!e->find[0]) set_status(e, "type pattern, Enter");
+    else if (ev->key == PK_FINDNEXT) find_next(e, d);
+    else find_prev(e, d);
+    break;
+  default:
+    return MOTE_FALSE;
+  }
+  return MOTE_TRUE;
 }
 
-static void request_quit(Editor *e) {
-  if (any_dirty(e)) {
-    e->mode = MODE_QUITASK;
-    unsaved_ask(e, "quit");
+/* --- popups (help, recent files, quick open) --- */
+
+static void handle_help(Editor *e, const PlatEvent *ev) {
+  if (ev->type != PE_KEY) return; /* focus noise / stray text must not close it */
+  switch (ev->key) {
+  case PK_ESCAPE:
+  case PK_F1:
+  case PK_HELP:
+  case PK_ENTER:
+    leave_mode(e);
     return;
+  case PK_UP: e->help_top -= 1; break;
+  case PK_PGUP: e->help_top -= 10; break;
+  case PK_DOWN: e->help_top += 1; break; /* upper bound clamped in ed_draw */
+  case PK_PGDN: e->help_top += 10; break;
+  default: return;
   }
-  e->want_quit = MOTE_TRUE;
+  if (e->help_top < 0) e->help_top = 0;
+  mark(e);
 }
 
-void ed_handle(Editor *e, Plat *p, const PlatEvent *ev) {
-  mote_bool keep;
-  size_t len, np;
-  Doc *d = D(e);
+/* Up/Down or j/k move a list selection; true if `ev` was one of them. */
+static mote_bool list_nav(Editor *e, const PlatEvent *ev, int *sel, int n) {
+  int dy;
+  char c = ev->type == PE_TEXT && ev->text_len == 1 ? ev->text[0] : 0;
+  if ((ev->type == PE_KEY && ev->key == PK_UP) || c == 'k') dy = -1;
+  else if ((ev->type == PE_KEY && ev->key == PK_DOWN) || c == 'j') dy = 1;
+  else return MOTE_FALSE;
+  *sel += dy;
+  if (*sel >= n) *sel = n - 1;
+  if (*sel < 0) *sel = 0;
+  mark(e);
+  return MOTE_TRUE;
+}
 
-  if (ev->type == PE_EXPOSE) {
-    mark(e);
+static void recent_begin(Editor *e) {
+  if (!e->nrecent) {
+    set_status(e, "no recent");
     return;
   }
-  if (ev->type == PE_KEY && handle_global_keys(e, d, ev)) return;
-  if (ev->type == PE_QUIT) {
-    request_quit(e);
-    return;
-  }
+  e->recent_sel = 0;
+  begin_mode(e, MODE_RECENT, "Recent — j/k Enter, 1-8");
+}
 
-  if (e->mode == MODE_HELP) {
-    /* Only leave help on explicit dismiss — ignore focus noise / text. */
-    if (ev->type == PE_KEY &&
-        (ev->key == PK_ESCAPE || ev->key == PK_F1 || ev->key == PK_HELP ||
-         ev->key == PK_ENTER)) {
-      e->mode = MODE_EDIT;
-      set_status(e, "F1 help");
-      mark(e);
-    } else if (ev->type == PE_KEY && (ev->key == PK_UP || ev->key == PK_PGUP)) {
-      e->help_top -= ev->key == PK_UP ? 1 : 10;
-      if (e->help_top < 0) e->help_top = 0;
-      mark(e);
-    } else if (ev->type == PE_KEY && (ev->key == PK_DOWN || ev->key == PK_PGDN)) {
-      e->help_top += ev->key == PK_DOWN ? 1 : 10; /* clamped in ed_draw */
-      mark(e);
-    }
+static void handle_recent(Editor *e, const PlatEvent *ev) {
+  char path[sizeof e->recent[0]];
+  int pick;
+  if (list_nav(e, ev, &e->recent_sel, e->nrecent)) return;
+  if (ev->type == PE_KEY && ev->key == PK_ESCAPE) {
+    leave_mode(e);
     return;
   }
+  if (ev->type == PE_KEY && ev->key == PK_ENTER)
+    pick = e->recent_sel;
+  else if (ev->type == PE_TEXT && ev->text_len == 1 && ev->text[0] >= '1' &&
+           ev->text[0] <= '0' + MAX_RECENT)
+    pick = ev->text[0] - '1';
+  else
+    return;
+  if (pick >= e->nrecent) return;
+  mote_snprintf(path, sizeof path, "%s", e->recent[pick]);
+  e->mode = MODE_EDIT;
+  ed_open_path(e, path);
+}
 
-  if (e->mode == MODE_RECENT) {
-    if (ev->type == PE_KEY) {
-      if (ev->key == PK_ESCAPE) {
-        e->mode = MODE_EDIT;
-        set_status(e, "F1 help");
-        return;
-      }
-      if (ev->key == PK_UP) {
-        if (e->recent_sel > 0) e->recent_sel--;
-        mark(e);
-        return;
-      }
-      if (ev->key == PK_DOWN) {
-        if (e->nrecent && e->recent_sel + 1 < e->nrecent) e->recent_sel++;
-        mark(e);
-        return;
-      }
-      if (ev->key == PK_ENTER) {
-        if (e->nrecent > 0) ed_open_path(e, e->recent[e->recent_sel]);
-        e->mode = MODE_EDIT;
-        return;
-      }
-      /* digits 1-8 via text */
-    }
-    if (ev->type == PE_TEXT && ev->text_len == 1 && ev->text[0] >= '1' &&
-        ev->text[0] <= '8') {
-      int idx = ev->text[0] - '1';
-      if (idx < e->nrecent) {
-        ed_open_path(e, e->recent[idx]);
-        e->mode = MODE_EDIT;
-      }
-      return;
-    }
-    if (ev->type == PE_TEXT && (ev->text[0] == 'j' || ev->text[0] == 'k')) {
-      if (ev->text[0] == 'k' && e->recent_sel > 0) e->recent_sel--;
-      if (ev->text[0] == 'j' && e->nrecent && e->recent_sel + 1 < e->nrecent)
-        e->recent_sel++;
-      mark(e);
-      return;
-    }
-    return;
-  }
-
-  if (e->mode == MODE_QUICKOPEN) {
-    if (ev->type == PE_KEY) {
-      if (ev->key == PK_ESCAPE) {
-        e->mode = MODE_EDIT;
-        set_status(e, "F1 help");
-        return;
-      }
-      if (ev->key == PK_UP) {
-        if (e->qf_sel > 0) e->qf_sel--;
-        mark(e);
-        return;
-      }
-      if (ev->key == PK_DOWN) {
-        if (e->qf_n && e->qf_sel + 1 < e->qf_n) e->qf_sel++;
-        mark(e);
-        return;
-      }
-      if (ev->key == PK_ENTER) {
-        if (e->qf_n > 0) {
-          char path[1024];
-          mote_snprintf(path, sizeof path, "%s/%s", e->qf_dir,
-                        e->qf_match[e->qf_sel]);
-          ed_open_path(e, path);
-        }
-        e->mode = MODE_EDIT;
-        return;
-      }
-    }
-    if (ev->type == PE_TEXT && ev->text_len == 1 &&
-        (ev->text[0] == 'j' || ev->text[0] == 'k')) {
-      if (ev->text[0] == 'k' && e->qf_sel > 0) e->qf_sel--;
-      if (ev->text[0] == 'j' && e->qf_n && e->qf_sel + 1 < e->qf_n) e->qf_sel++;
-      mark(e);
-      return;
-    }
-    if (ev->type == PE_TEXT && ev->text_len > 0) {
-      size_t n = strlen(e->prompt);
-      if (n + (size_t)ev->text_len < sizeof e->prompt - 1) {
-        memcpy(e->prompt + n, ev->text, (size_t)ev->text_len);
-        e->prompt[n + (size_t)ev->text_len] = 0;
-        quickopen_filter(e);
-        mark(e);
-      }
-      return;
-    }
-    if (ev->type == PE_KEY && ev->key == PK_BACKSPACE) {
-      size_t n = strlen(e->prompt);
-      if (n) {
-        n = utf8_prev(e->prompt, n);
-        e->prompt[n] = 0;
-        quickopen_filter(e);
-        mark(e);
-      }
-      return;
-    }
-    return;
-  }
-
-  if (e->mode != MODE_EDIT) {
-    if (e->mode == MODE_QUITASK && ev->type == PE_KEY) {
-      if (ev->key == PK_QUIT) {
-        e->want_quit = MOTE_TRUE;
-        return;
-      }
-      if (ev->key == PK_SAVE) {
-        finish_quit_saves(e);
-        return;
-      }
-      if (ev->key == PK_ESCAPE) {
-        e->quit_after_save = MOTE_FALSE;
-        e->mode = MODE_EDIT;
-        set_status(e, "F1 help");
-        return;
-      }
-    }
-    if (e->mode == MODE_OPENASK && ev->type == PE_KEY) {
-      if (ev->key == PK_QUIT) {
-        d->dirty = MOTE_FALSE;
-        e->mode = MODE_EDIT;
-        if (e->pending_path[0]) ed_open_path(e, e->pending_path);
-        e->pending_path[0] = 0;
-        return;
-      }
-      if (ev->key == PK_SAVE) {
-        if (!d->path[0]) {
-          e->mode = MODE_SAVEAS;
-          e->prompt[0] = 0;
-          set_status(e, "Save As:");
-          return;
-        }
-        if (!save_to(e, d, d->path)) return;
-        e->mode = MODE_EDIT;
-        if (e->pending_path[0]) {
-          char path[1024];
-          mote_snprintf(path, sizeof path, "%s", e->pending_path);
-          e->pending_path[0] = 0;
-          ed_open_path(e, path);
-        }
-        return;
-      }
-      if (ev->key == PK_ESCAPE) {
-        e->pending_path[0] = 0;
-        e->mode = MODE_EDIT;
-        set_status(e, "F1 help");
-        return;
-      }
-    }
-    if (e->mode == MODE_CLOSEASK && ev->type == PE_KEY) {
-      if (ev->key == PK_QUIT) {
-        d->dirty = MOTE_FALSE;
-        e->mode = MODE_EDIT;
-        close_doc_force(e);
-        return;
-      }
-      if (ev->key == PK_SAVE) {
-        if (!d->path[0]) {
-          e->close_after_save = MOTE_TRUE;
-          e->mode = MODE_SAVEAS;
-          e->prompt[0] = 0;
-          set_status(e, "Save As:");
-          return;
-        }
-        if (!save_to(e, d, d->path)) return;
-        e->mode = MODE_EDIT;
-        close_doc_force(e);
-        return;
-      }
-      if (ev->key == PK_ESCAPE) {
-        e->close_after_save = MOTE_FALSE;
-        e->mode = MODE_EDIT;
-        set_status(e, "F1 help");
-        return;
-      }
-    }
-    handle_prompt(e, ev);
-    return;
-  }
-
-  if (ev->type == PE_SCROLL) {
-    size_t top = view_vrow0(e, d);
-    int step = ev->wheel;
-    if (step > 0)
-      top = top > (size_t)step ? top - (size_t)step : 0;
-    else if (step < 0)
-      top += (size_t)(-step);
-    set_view_vrow(e, d, top);
-    mark(e);
-    return;
-  }
-
-  if (ev->type == PE_MOUSE_DOWN) {
-    np = click_to_pos(e, d, ev->mx, ev->my);
-    e->mouse_down = MOTE_TRUE;
-    d->caret = np;
-    if (!ev->shift) d->sel_anchor = d->caret;
-    sync_caret_rc(d);
-    ensure_visible(e, d);
-    mark(e);
-    return;
-  }
-  if (ev->type == PE_MOUSE_UP) {
-    e->mouse_down = MOTE_FALSE;
-    return;
-  }
-  if (ev->type == PE_MOUSE_MOVE && e->mouse_down) {
-    d->caret = click_to_pos(e, d, ev->mx, ev->my);
-    sync_caret_rc(d);
-    ensure_visible(e, d);
-    mark(e);
-    return;
-  }
-
-  if (ev->type == PE_TEXT && ev->text_len > 0 && !ev->ctrl) {
-    if (ev->text_len == 1) {
-      char c = ev->text[0];
-      if (c == '(') {
-        insert_autoclose(e, d, '(', ')');
-        return;
-      }
-      if (c == '[') {
-        insert_autoclose(e, d, '[', ']');
-        return;
-      }
-      if (c == '{') {
-        insert_autoclose(e, d, '{', '}');
-        return;
-      }
-      if (c == '"') {
-        insert_autoclose(e, d, '"', '"');
-        return;
-      }
-      if (c == '\'') {
-        insert_autoclose(e, d, '\'', '\'');
-        return;
-      }
-    }
-    insert_text(e, d, ev->text, (size_t)ev->text_len);
+static void handle_quickopen(Editor *e, const PlatEvent *ev) {
+  char path[sizeof e->qf_dir + sizeof e->qf_match[0]];
+  if (list_nav(e, ev, &e->qf_sel, e->qf_n)) return;
+  if (ev->type == PE_TEXT) {
+    if (prompt_append(e, ev->text, ev->text_len)) quickopen_filter(e);
     return;
   }
   if (ev->type != PE_KEY) return;
+  if (ev->key == PK_BACKSPACE) {
+    if (prompt_backspace(e)) quickopen_filter(e);
+  } else if (ev->key == PK_ESCAPE) {
+    leave_mode(e);
+  } else if (ev->key == PK_ENTER) {
+    e->mode = MODE_EDIT;
+    if (e->qf_n > 0) {
+      mote_snprintf(path, sizeof path, "%s/%s", e->qf_dir, e->qf_match[e->qf_sel]);
+      ed_open_path(e, path);
+    }
+  }
+}
 
-  keep = ev->shift;
-  len = buf_len(&d->buf);
+/* --- edit mode --- */
 
+static void handle_mouse(Editor *e, Doc *d, const PlatEvent *ev) {
+  size_t top;
+  switch (ev->type) {
+  case PE_SCROLL:
+    top = view_vrow0(e, d, NULL);
+    if (ev->wheel > 0) top = top > (size_t)ev->wheel ? top - (size_t)ev->wheel : 0;
+    else top += (size_t)(-ev->wheel);
+    set_view_vrow(e, d, top);
+    mark(e);
+    break;
+  case PE_MOUSE_DOWN:
+    e->mouse_down = MOTE_TRUE;
+    move_caret(e, d, click_to_pos(e, d, ev->mx, ev->my), ev->shift);
+    break;
+  case PE_MOUSE_MOVE:
+    if (e->mouse_down) move_caret(e, d, click_to_pos(e, d, ev->mx, ev->my), MOTE_TRUE);
+    break;
+  case PE_MOUSE_UP:
+    e->mouse_down = MOTE_FALSE;
+    break;
+  default:
+    break;
+  }
+}
+
+static void handle_edit_text(Editor *e, Doc *d, const PlatEvent *ev) {
+  static const char opens[] = "([{\"'";
+  static const char closes[] = ")]}\"'";
+  const char *q = NULL;
+  if (ev->text_len == 1 && ev->text[0]) q = strchr(opens, ev->text[0]);
+  if (q) insert_autoclose(e, d, *q, closes[q - opens]);
+  else insert_text(e, d, ev->text, (size_t)ev->text_len);
+}
+
+static void handle_edit_key(Editor *e, Doc *d, Plat *p, const PlatEvent *ev) {
+  mote_bool keep = ev->shift;
+  int page = e->rows > 1 ? e->rows - 1 : 1;
   switch (ev->key) {
   case PK_LEFT:
-    if (ev->ctrl) move_caret(e, d, prev_word(d, d->caret), keep);
-    else move_caret(e, d, ed_prev(d, d->caret), keep);
+    move_caret(e, d, ev->ctrl ? prev_word(d, d->caret) : ed_prev(d, d->caret), keep);
     break;
   case PK_RIGHT:
-    if (ev->ctrl) move_caret(e, d, next_word(d, d->caret), keep);
-    else move_caret(e, d, ed_next(d, d->caret), keep);
+    move_caret(e, d, ev->ctrl ? next_word(d, d->caret) : ed_next(d, d->caret), keep);
     break;
   case PK_UP: move_vert(e, d, -1, keep); break;
   case PK_DOWN: move_vert(e, d, 1, keep); break;
+  case PK_PGUP: move_vert(e, d, -page, keep); break;
+  case PK_PGDN: move_vert(e, d, page, keep); break;
   case PK_HOME: move_caret(e, d, line_start(d, d->caret), keep); break;
   case PK_END: move_caret(e, d, line_end(d, d->caret), keep); break;
-  case PK_PGUP: move_vert(e, d, -(e->rows > 1 ? e->rows - 1 : 1), keep); break;
-  case PK_PGDN: move_vert(e, d, e->rows > 1 ? e->rows - 1 : 1, keep); break;
-  case PK_BACKSPACE:
-    if (!can_edit(d)) {
-      set_status(e, "readonly");
-      break;
-    }
-    if (has_sel(d)) delete_sel(e, d);
-    else if (d->caret > 0) {
-      np = ed_prev(d, d->caret);
-      push_delete(e, d, np, d->caret - np);
-      d->caret = np;
-      clear_sel(d);
-      sync_caret_rc(d);
-    }
-    ensure_visible(e, d);
-    mark(e);
-    break;
-  case PK_DELETE:
-    if (!can_edit(d)) {
-      set_status(e, "readonly");
-      break;
-    }
-    if (has_sel(d)) delete_sel(e, d);
-    else if (d->caret < len) {
-      np = ed_next(d, d->caret);
-      push_delete(e, d, d->caret, np - d->caret);
-      clear_sel(d);
-      sync_caret_rc(d);
-    }
-    mark(e);
-    break;
+  case PK_BACKSPACE: delete_back(e, d); break;
+  case PK_DELETE: delete_fwd(e, d); break;
   case PK_ENTER: insert_newline_indent(e, d); break;
-  case PK_TAB:
-    if (ev->shift) indent_sel(e, d, -1);
-    else indent_sel(e, d, 1);
-    break;
-  case PK_SAVE: try_save(e, d); break;
-  case PK_SAVEAS:
-    e->mode = MODE_SAVEAS;
-    e->prompt[0] = 0;
-    set_status(e, "Save As:");
-    break;
-  case PK_OPEN:
-    e->mode = MODE_OPEN;
-    e->prompt[0] = 0;
-    set_status(e, "Open:");
-    break;
-  case PK_QUIT: request_quit(e); break;
-  case PK_UNDO: do_undo(e, d); break;
-  case PK_REDO: do_redo(e, d); break;
-  case PK_FIND:
-    if (e->mode == MODE_FIND) {
-      mark(e);
-      break;
-    }
-    e->mode = MODE_FIND;
-    mote_snprintf(e->prompt, sizeof e->prompt, "%s", e->find);
-    d->match_a = d->match_b = 0;
-    set_status(e, "Find: /re/ or text  Alt+C case  Alt+W word");
-    break;
-  case PK_FINDNEXT: find_next(e, d); mark(e); break;
-  case PK_FINDPREV: find_prev(e, d); mark(e); break;
-  case PK_FINDCASE:
-    e->find_case = !e->find_case;
-    set_status(e, e->find_case ? "find: case on" : "find: case off");
-    break;
-  case PK_FINDWORD:
-    e->find_word = !e->find_word;
-    set_status(e, e->find_word ? "find: word on" : "find: word off");
-    break;
-  case PK_REPLACE:
-    e->mode = MODE_REPLACE;
-    e->prompt[0] = 0;
-    set_status(e, "Replace: /find/repl/ or text");
-    break;
-  case PK_GOTO:
-    e->mode = MODE_GOTO;
-    e->prompt[0] = 0;
-    set_status(e, "Goto:");
-    break;
-  case PK_THEME: cycle_theme(e); break;
+  case PK_TAB: indent_sel(e, d, ev->shift ? -1 : 1); break;
+  case PK_UNDO: do_undo(e, d, MOTE_FALSE); break;
+  case PK_REDO: do_undo(e, d, MOTE_TRUE); break;
   case PK_CUT: cut_sel(e, d, p); break;
   case PK_COPY: copy_sel(e, d, p); break;
   case PK_PASTE: paste_clip(e, d, p); break;
-  case PK_SELALL:
-    d->sel_anchor = 0;
-    d->caret = len;
-    sync_caret_rc(d);
-    mark(e);
-    break;
+  case PK_SELALL: select_all(e, d); break;
+  case PK_DELLINE: delete_line(e, d); break;
+  case PK_DUPLINE: dup_line(e, d); break;
+  case PK_COMMENT: toggle_comment(e, d); break;
+  case PK_BRACKET: jump_bracket(e, d); break;
+
+  case PK_SAVE: try_save(e, d); break;
+  case PK_SAVEAS: begin_mode(e, MODE_SAVEAS, "Save As:"); break;
+  case PK_OPEN: begin_mode(e, MODE_OPEN, "Open:"); break;
+  case PK_QUICKOPEN: quickopen_begin(e, d); break;
+  case PK_RECENT: recent_begin(e); break;
+  case PK_RELOAD: reload_doc(e, d); break;
+  case PK_NEWDOC: ed_new_doc(e); break;
+  case PK_NEXTDOC: switch_doc(e, (e->cur + 1) % e->ndocs); break;
+  case PK_PREVDOC: switch_doc(e, (e->cur + e->ndocs - 1) % e->ndocs); break;
+  case PK_CLOSEDOC: close_doc(e); break;
+  case PK_QUIT: request_quit(e); break;
+
+  case PK_FIND: find_begin(e, d); break;
+  case PK_REPLACE: begin_mode(e, MODE_REPLACE, "Replace: /find/repl/ or text"); break;
+  case PK_GOTO: begin_mode(e, MODE_GOTO, "Goto:"); break;
+
   case PK_HELP:
   case PK_F1:
     e->mode = MODE_HELP;
     e->help_top = 0;
     mark(e);
     break;
-  case PK_WRAP:
-    e->wrap = !e->wrap;
-    free(e->vrow_cache);
-    e->vrow_cache = NULL;
-    e->vrow_n = 0;
-    if (e->wrap) {
-      d->col0 = 0;
-      d->wrap0 = 0;
-    }
-    ensure_visible(e, d);
-    set_status(e, e->wrap ? "wrap on" : "wrap off");
-    break;
-  case PK_WS:
-    e->show_ws = !e->show_ws;
-    set_status(e, e->show_ws ? "whitespace on" : "whitespace off");
-    break;
-  case PK_DELLINE: delete_line(e, d); break;
-  case PK_DUPLINE: dup_line(e, d); break;
-  case PK_ZOOMIN: {
-    int px = plat_font_px(p) + 1;
-    plat_set_font_px(p, px);
-    set_status(e, "zoom+");
-    mark(e);
-    break;
+  case PK_THEME: cycle_theme(e); break;
+  case PK_WRAP: toggle_wrap(e, d); break;
+  case PK_WS: toggle_flag(e, &e->show_ws, "whitespace"); break;
+  case PK_READONLY: toggle_flag(e, &d->readonly, "readonly"); break;
+  case PK_EOL: toggle_eol(e, d); break;
+  case PK_ZOOMIN: zoom(e, p, 1); break;
+  case PK_ZOOMOUT: zoom(e, p, -1); break;
+  case PK_ZOOMRESET: zoom(e, p, 0); break;
+  default: break;
   }
-  case PK_ZOOMOUT: {
-    int px = plat_font_px(p) - 1;
-    plat_set_font_px(p, px);
-    set_status(e, "zoom-");
+}
+
+void ed_handle(Editor *e, Plat *p, const PlatEvent *ev) {
+  Doc *d = D(e);
+  if (ev->type == PE_EXPOSE) {
     mark(e);
-    break;
+    return;
   }
-  case PK_ZOOMRESET:
-    plat_set_font_px(p, 15);
-    set_status(e, "zoom reset");
-    mark(e);
-    break;
-  case PK_NEWDOC: ed_new_doc(e); break;
-  case PK_NEXTDOC: switch_doc(e, (e->cur + 1) % e->ndocs); break;
-  case PK_PREVDOC:
-    switch_doc(e, (e->cur + e->ndocs - 1) % e->ndocs);
-    break;
-  case PK_RELOAD: reload_doc(e, d); break;
-  case PK_READONLY:
-    d->readonly = !d->readonly;
-    set_status(e, d->readonly ? "readonly on" : "readonly off");
-    break;
-  case PK_EOL:
-    d->eol = d->eol == EOL_LF ? EOL_CRLF : EOL_LF;
-    d->dirty = MOTE_TRUE;
-    set_status(e, d->eol == EOL_CRLF ? "eol CRLF" : "eol LF");
-    break;
-  case PK_CLOSEDOC: close_doc(e); break;
-  case PK_BRACKET: jump_bracket(e, d); break;
-  case PK_RECENT:
-    if (!e->nrecent) {
-      set_status(e, "no recent");
-      break;
-    }
-    e->mode = MODE_RECENT;
-    e->recent_sel = 0;
-    set_status(e, "Recent — j/k Enter, 1-8");
-    mark(e);
-    break;
-  case PK_QUICKOPEN:
-    quickopen_begin(e, d);
-    break;
-  case PK_COMMENT:
-    toggle_comment(e, d);
-    break;
-  case PK_BOOKMARK_SET:
-    bookmark_toggle(e, d);
-    break;
-  case PK_BOOKMARK:
-    bookmark_jump(e, d);
-    break;
-  default:
-    break;
+  if (ev->type == PE_QUIT) {
+    request_quit(e);
+    return;
   }
+  switch (e->mode) {
+  case MODE_HELP: handle_help(e, ev); return;
+  case MODE_RECENT: handle_recent(e, ev); return;
+  case MODE_QUICKOPEN: handle_quickopen(e, ev); return;
+  case MODE_QUITASK:
+  case MODE_OPENASK:
+  case MODE_CLOSEASK: handle_ask(e, d, ev); return;
+  default: break;
+  }
+  if (handle_global_keys(e, d, ev)) return;
+  if (e->mode != MODE_EDIT) handle_prompt(e, d, ev);
+  else if (ev->type == PE_KEY) handle_edit_key(e, d, p, ev);
+  else if (ev->type == PE_TEXT && ev->text_len > 0 && !ev->ctrl) handle_edit_text(e, d, ev);
+  else handle_mouse(e, d, ev);
 }
 
 static void draw_text_fit(Plat *p, int x, int y, const char *s, int n, mote_u32 rgb,
@@ -2482,319 +2047,311 @@ static void draw_range(Editor *e, Doc *d, Plat *p, size_t a, size_t b, int y,
   }
 }
 
-void ed_draw(Editor *e, Plat *p) {
-  int w, h, i, sw, digits;
-  size_t crow, ccol, a, b, nlines, lrow, wseg, col0, col_max;
-  char bar[384], num[16];
-  const char *name;
-  Doc *d = D(e);
-  const Theme *t = th(e);
-  const HlSyntax *syn = hl_select(d->path);
-  int in_ml = 0;
-  size_t cvr, cvc, top;
-  size_t *vrow_vp = NULL;
-  plat_get_size(p, &w, &h);
+/* Buffer bytes [a, b) as a NUL-terminated string, truncated to fit. */
+static int copy_line(const Doc *d, size_t a, size_t b, char *out, int cap) {
+  int i, n = (int)(b - a);
+  if (n > cap - 1) n = cap - 1;
+  for (i = 0; i < n; i++) out[i] = buf_at(&d->buf, a + (size_t)i);
+  out[n] = 0;
+  return n;
+}
+
+/* Cell size, gutter and text area for this frame; the bottom cell row is
+   the status bar. */
+static void layout(Editor *e, Plat *p, Doc *d, int w, int h, int *digits) {
+  size_t n = d->lines.n ? d->lines.n : 1;
   e->cw = plat_font_w(p);
   e->ch = plat_font_h(p);
   if (e->cw < 1) e->cw = 8;
   if (e->ch < 1) e->ch = 16;
-
-  ensure_lines(d);
-  sync_caret_rc(d);
-  nlines = d->lines.n ? d->lines.n : 1;
-  digits = 1;
-  {
-    size_t tln = nlines;
-    while (tln >= 10) {
-      digits++;
-      tln /= 10;
-    }
-  }
-  e->gutter = (digits + 1) * e->cw;
+  for (*digits = 1; n >= 10; n /= 10) (*digits)++;
+  e->gutter = (*digits + 1) * e->cw;
   if (e->gutter > w / 3) e->gutter = w / 3;
   e->cols = (w - e->gutter) / e->cw;
-  /* Status strip pinned to bottom; leftover h%ch stays inside the strip. */
-  {
-    int status_h = e->ch;
-    if (status_h < 1) status_h = 1;
-    if (status_h > h) status_h = h;
-    e->rows = (h - status_h) / e->ch;
-  }
+  e->rows = (h - e->ch) / e->ch;
   if (e->cols < 1) e->cols = 1;
   if (e->rows < 1) e->rows = 1;
-  if (e->wrap) d->col0 = 0;
-  if (e->wrap && e->cols > 0) {
+  if (e->wrap) {
     size_t segs = segs_of(e, d, d->row0);
-    if (segs < 1) segs = 1;
+    d->col0 = 0;
     if (d->wrap0 >= segs) d->wrap0 = segs - 1;
   }
+}
 
-  vrow_vp = NULL;
-  if (e->wrap && e->cols > 0 && nlines > 0) {
-    if (!e->vrow_cache || e->vrow_n != nlines || e->vrow_cols != e->cols ||
-        d->lines.dirty) {
-      free(e->vrow_cache);
-      e->vrow_cache = build_vrow_prefix(e, d, nlines);
-      e->vrow_n = nlines;
-      e->vrow_cols = e->cols;
-    }
-    vrow_vp = e->vrow_cache;
+/* Wrap mode: cached first visual row of every line; NULL without wrap. */
+static const size_t *vrow_table(Editor *e, Doc *d) {
+  size_t n = d->lines.n ? d->lines.n : 1;
+  if (!e->wrap) return NULL;
+  if (!e->vrow_cache || e->vrow_n != n || e->vrow_cols != e->cols) {
+    free(e->vrow_cache);
+    e->vrow_cache = build_vrow_prefix(e, d, n);
+    e->vrow_n = e->vrow_cache ? n : 0;
+    e->vrow_cols = e->cols;
   }
+  return e->vrow_cache;
+}
 
+#define HL_RESCAN_ROWS 128 /* how far above the view a cold rescan starts */
+
+/* Block-comment state at the top visible row: resumed from the previous
+   frame when scrolling down, else rescanned from HL_RESCAN_ROWS above. */
+static int hl_state_at_view(Doc *d, const HlSyntax *syn) {
+  size_t r, a;
+  int in_ml = 0, n;
+  char line[4096];
+  if (!syn || !hl_has_multiline(syn)) return 0;
+  if (d->hl_ml_valid && d->hl_ml_row <= d->row0) {
+    r = d->hl_ml_row;
+    in_ml = d->hl_in_ml;
+  } else {
+    r = d->row0 > HL_RESCAN_ROWS ? d->row0 - HL_RESCAN_ROWS : 0;
+  }
+  for (; r < d->row0; r++) {
+    a = row_start(d, r);
+    n = copy_line(d, a, line_end(d, a), line, (int)sizeof line);
+    hl_line(syn, line, (size_t)n, in_ml, NULL, 0, &in_ml);
+  }
+  d->hl_in_ml = in_ml;
+  d->hl_ml_row = d->row0;
+  d->hl_ml_valid = MOTE_TRUE;
+  return in_ml;
+}
+
+/* Right-aligned line number with a '*' bookmark marker. */
+static void draw_line_number(Editor *e, Doc *d, Plat *p, const Theme *t, size_t row,
+                             int y, int digits) {
+  char num[32];
+  int n, x;
+  mote_snprintf(num, sizeof num, "%*lu%c", digits, (unsigned long)(row + 1),
+                bm_find(d, row) >= 0 ? '*' : ' ');
+  n = (int)strlen(num);
+  x = e->gutter - (n + 1) * e->cw; /* one cell gap before the text */
+  plat_draw_text(p, x < 0 ? 0 : x, y, num, n, t->gutter_fg);
+}
+
+static void draw_text_rows(Editor *e, Doc *d, Plat *p, const Theme *t,
+                           const HlSyntax *syn, int in_ml, int digits, int w) {
+  size_t nlines = d->lines.n ? d->lines.n : 1;
+  size_t row = d->row0, seg = d->wrap0, cols = (size_t)e->cols;
+  int i = 0;
+  while (i < e->rows && row < nlines) {
+    HlSpan spans[HL_MAX_SPANS];
+    char line[4096];
+    int nspans = 0, n, y = i * e->ch;
+    size_t a = row_start(d, row), b = line_end(d, a);
+    size_t segs = segs_of(e, d, row);
+    size_t col0 = e->wrap ? seg * cols : d->col0;
+    if (seg >= segs) {
+      seg = 0;
+      row++;
+      continue;
+    }
+    if (row == d->caret_row)
+      plat_fill_rect(p, e->gutter, y, w - e->gutter, e->ch, t->line);
+    if (seg == 0) draw_line_number(e, d, p, t, row, y, digits);
+    if (syn) {
+      int ml = in_ml;
+      n = copy_line(d, a, b, line, (int)sizeof line);
+      nspans = hl_line(syn, line, (size_t)n, ml, spans, HL_MAX_SPANS, &ml);
+      if (seg + 1 >= segs) in_ml = ml;
+    }
+    draw_range(e, d, p, a, b, y, col0, col0 + cols, spans, nspans, t);
+    i++;
+    if (++seg >= segs) {
+      seg = 0;
+      row++;
+    }
+  }
+}
+
+static mote_bool popup_open(const Editor *e) {
+  return e->mode == MODE_HELP || e->mode == MODE_RECENT || e->mode == MODE_QUICKOPEN;
+}
+
+static void draw_caret(Editor *e, Doc *d, Plat *p, const Theme *t, const size_t *vp) {
+  size_t vr, vc, top = view_vrow0(e, d, vp);
+  int x, y;
+  caret_vis(e, d, &vr, &vc, vp);
+  if (!e->wrap) {
+    if (d->caret_col < d->col0 || d->caret_col >= d->col0 + (size_t)e->cols) vr = NO_POS;
+    else vc = d->caret_col - d->col0;
+  }
+  if (popup_open(e) || vr == NO_POS || vr < top || vr >= top + (size_t)e->rows) {
+    plat_set_caret(p, 0, 0, e->ch, MOTE_FALSE);
+    return;
+  }
+  x = e->gutter + (int)vc * e->cw;
+  y = (int)(vr - top) * e->ch;
+  if (!plat_set_caret(p, x, y, e->ch, MOTE_TRUE))
+    plat_fill_rect(p, x, y, e->cw, e->ch, t->caret);
+}
+
+static void draw_status(Editor *e, Doc *d, Plat *p, const Theme *t,
+                        const HlSyntax *syn, int w, int h, int y) {
+  char bar[384];
+  const char *pfx = prompt_bar_prefix(e->mode);
+  int pad = w > e->cw * 2 ? e->cw : 0;
+  plat_fill_rect(p, 0, y, w, h - y, t->status);
+  if (pfx[0])
+    mote_snprintf(bar, sizeof bar, "%s%s%s", pfx, e->prompt[0] ? " " : "", e->prompt);
+  else if (e->mode == MODE_QUITASK || e->mode == MODE_OPENASK || e->mode == MODE_CLOSEASK)
+    mote_snprintf(bar, sizeof bar, "%s", e->status);
+  else
+    mote_snprintf(bar, sizeof bar, "[%d/%d] %s%s%s  %lu:%lu  %s  %s  %s", e->cur + 1,
+                  e->ndocs, path_base(d->path[0] ? d->path : "[untitled]"),
+                  d->dirty ? "*" : "", d->readonly ? " RO" : "",
+                  (unsigned long)(d->caret_row + 1), (unsigned long)(d->caret_col + 1),
+                  d->eol == EOL_CRLF ? "CRLF" : "LF", hl_lang_name(syn),
+                  e->status[0] ? e->status : "F1 help");
+  draw_text_fit(p, pad, y, bar, -1, t->status_fg, w - pad, e->cw);
+}
+
+/* Centered popup box (help, recent, quick open) above the status bar. */
+typedef struct {
+  int x, y, w, h; /* box, without the border */
+  int inset;      /* border width */
+  int tx, text_w; /* text column and width inside the box */
+  int max_h;      /* tallest box that keeps the status bar visible */
+} Popup;
+
+static void popup_layout(const Editor *e, int w, int status_y, Popup *b) {
+  int pad = e->cw;
+  b->inset = pad > 1 ? pad / 2 : 1;
+  b->x = pad * 2;
+  if (b->x * 2 >= w) b->x = pad;
+  b->tx = b->x + pad;
+  if (b->tx >= w - pad) b->tx = b->x;
+  b->y = pad * 2 > e->ch ? pad * 2 : e->ch;
+  b->w = w - b->x * 2;
+  if (b->w < pad * 4) b->w = w > 2 ? w - 2 : w;
+  if (b->w < 1) b->w = 1;
+  b->text_w = b->w - (b->tx - b->x) - pad;
+  if (b->text_w < e->cw) b->text_w = b->w - (b->tx - b->x);
+  if (b->text_w < 1) b->text_w = 1;
+  b->max_h = status_y - b->y - b->inset;
+  if (b->max_h < e->ch) b->max_h = e->ch;
+  b->h = b->max_h;
+}
+
+/* Size the box for `want` content rows plus a blank row above and below;
+   returns how many content rows fit. */
+static int popup_fit(const Editor *e, Popup *b, int want) {
+  int n = want, max_rows = b->max_h / e->ch - 2;
+  if (max_rows < 1) max_rows = 1;
+  if (n > max_rows) n = max_rows;
+  b->h = (n + 2) * e->ch;
+  if (b->h > b->max_h) {
+    b->h = b->max_h - b->max_h % e->ch;
+    if (b->h < e->ch) b->h = e->ch;
+    n = b->h / e->ch - 2;
+    if (n < 1) n = 1;
+  }
+  return n;
+}
+
+static void popup_frame(Plat *p, const Theme *t, const Popup *b) {
+  int bx = b->x > b->inset ? b->x - b->inset : 0;
+  int by = b->y > b->inset ? b->y - b->inset : 0;
+  plat_fill_rect(p, bx, by, b->w + b->inset * 2, b->h + b->inset * 2, t->help_bd);
+  plat_fill_rect(p, b->x, b->y, b->w, b->h, t->help_bg);
+}
+
+/* Y of content row `i` (0-based), or -1 if it falls outside the box. */
+static int popup_row_y(const Editor *e, const Popup *b, int i) {
+  int y = b->y + (i + 1) * e->ch;
+  return y + e->ch <= b->y + b->h ? y : -1;
+}
+
+/* Two key/action columns when wide enough, else one; scrolls by help_top. */
+static void draw_help(Editor *e, Plat *p, const Theme *t, Popup *b) {
+  mote_bool two = b->text_w / e->cw >= HELP_TWO_COL_W;
+  int total = two ? (HELP_NL > HELP_NR ? HELP_NL : HELP_NR) : HELP_NL + HELP_NR;
+  int n = popup_fit(e, b, total), i, r, y;
+  popup_frame(p, t, b);
+  if (e->help_top > total - n) e->help_top = total - n;
+  if (e->help_top < 0) e->help_top = 0;
+  for (i = 0; i < n && (y = popup_row_y(e, b, i)) >= 0; i++) {
+    r = i + e->help_top;
+    if (!two) {
+      if (r < HELP_NL + HELP_NR)
+        draw_help_item(p, t, r < HELP_NL ? &help_left[r] : &help_right[r - HELP_NL],
+                       b->tx, y, HELP_KEY_W, b->text_w, e->cw);
+      continue;
+    }
+    if (r < HELP_NL)
+      draw_help_item(p, t, &help_left[r], b->tx, y, HELP_KEY_W,
+                     (HELP_COL2 - 1) * e->cw, e->cw);
+    if (r < HELP_NR)
+      draw_help_item(p, t, &help_right[r], b->tx + HELP_COL2 * e->cw, y, HELP_KEY2_W,
+                     b->text_w - HELP_COL2 * e->cw, e->cw);
+  }
+  if (n < total && (y = popup_row_y(e, b, n)) >= 0)
+    draw_text_fit(p, b->tx, y,
+                  e->help_top + n < total ? "  ... Down/PgDn" : "  ... Up/PgUp", -1,
+                  t->gutter_fg, b->text_w, e->cw);
+}
+
+/* Recent files or quick-open matches: a title row, then the list,
+   scrolled so the selection stays visible. */
+static void draw_list_popup(Editor *e, Plat *p, const Theme *t, Popup *b) {
+  mote_bool recent = e->mode == MODE_RECENT;
+  int count = recent ? e->nrecent : e->qf_n;
+  int sel = recent ? e->recent_sel : e->qf_sel;
+  int vis = popup_fit(e, b, count + 1) - 1, first, i, y;
+  char line[300];
+  popup_frame(p, t, b);
+  draw_text_fit(p, b->tx, b->y + e->ch, recent ? "Recent" : "Go to file", -1, t->fg,
+                b->text_w, e->cw);
+  first = vis > 0 && sel >= vis ? sel - vis + 1 : 0;
+  for (i = first; i < count && i - first < vis; i++) {
+    if ((y = popup_row_y(e, b, i - first + 1)) < 0) break;
+    if (recent)
+      mote_snprintf(line, sizeof line, "%s%d %s", i == sel ? "> " : "  ", i + 1,
+                    path_base(e->recent[i]));
+    else
+      mote_snprintf(line, sizeof line, "%s%s", i == sel ? "> " : "  ", e->qf_match[i]);
+    draw_text_fit(p, b->tx, y, line, -1, i == sel ? t->kw : t->fg, b->text_w, e->cw);
+  }
+}
+
+static void update_title(Editor *e, Plat *p, const Doc *d) {
+  char title[sizeof e->title];
+  mote_snprintf(title, sizeof title, "%s%s — mote", d->dirty ? "*" : "",
+                path_base(d->path[0] ? d->path : "untitled"));
+  if (strcmp(title, e->title) == 0) return;
+  memcpy(e->title, title, sizeof title);
+  plat_set_title(p, title);
+}
+
+void ed_draw(Editor *e, Plat *p) {
+  Doc *d = D(e);
+  const Theme *t = th(e);
+  const HlSyntax *syn = hl_select(d->path);
+  const size_t *vp;
+  Popup box;
+  int w, h, digits, status_y, in_ml;
+
+  plat_get_size(p, &w, &h);
+  ensure_lines(d);
+  sync_caret_rc(d);
+  layout(e, p, d, w, h, &digits);
+  vp = vrow_table(e, d);
   if (e->mode == MODE_EDIT) find_bracket(d);
+  in_ml = hl_state_at_view(d, syn);
+  status_y = h > e->ch ? h - e->ch : 0;
 
   plat_begin_frame(p);
   plat_clear(p, t->bg);
-  if (e->gutter > 0)
-    plat_fill_rect(p, 0, 0, e->gutter, h - e->ch > 0 ? h - e->ch : 0, t->gutter_bg);
-
-  if (syn && hl_has_multiline(syn)) {
-    size_t r, r0, ra, rb;
-    char linebuf[4096];
-    int ncopy;
-    in_ml = 0;
-    if (d->hl_ml_valid && d->hl_ml_row <= d->row0) {
-      r0 = d->hl_ml_row;
-      in_ml = d->hl_in_ml;
-    } else {
-      r0 = d->row0 > 128 ? d->row0 - 128 : 0;
-      d->hl_ml_valid = MOTE_FALSE;
-    }
-    for (r = r0; r < d->row0; r++) {
-      ra = row_start(d, r);
-      rb = line_end(d, ra);
-      ncopy = (int)(rb - ra);
-      if (ncopy > (int)sizeof linebuf - 1) ncopy = (int)sizeof linebuf - 1;
-      for (i = 0; i < ncopy; i++) linebuf[i] = buf_at(&d->buf, ra + (size_t)i);
-      linebuf[ncopy] = 0;
-      hl_line(syn, linebuf, (size_t)ncopy, in_ml, NULL, 0, &in_ml);
-    }
-    d->hl_in_ml = in_ml;
-    d->hl_ml_row = d->row0;
-    d->hl_ml_valid = MOTE_TRUE;
+  if (e->gutter > 0) plat_fill_rect(p, 0, 0, e->gutter, status_y, t->gutter_bg);
+  draw_text_rows(e, d, p, t, syn, in_ml, digits, w);
+  draw_caret(e, d, p, t, vp);
+  draw_status(e, d, p, t, syn, w, h, status_y);
+  if (popup_open(e)) {
+    popup_layout(e, w, status_y, &box);
+    if (e->mode == MODE_HELP) draw_help(e, p, t, &box);
+    else draw_list_popup(e, p, t, &box);
   }
-
-  if (!d->row0_valid) {
-    d->row0_pos = row_start(d, d->row0);
-    d->row0_valid = MOTE_TRUE;
-  }
-  lrow = d->row0;
-  wseg = d->wrap0;
-  for (i = 0; i < e->rows; i++) {
-    HlSpan spans[HL_MAX_SPANS];
-    int nspans = 0;
-    char linebuf[4096];
-    int ncopy;
-    size_t segs;
-    if (lrow >= nlines) break;
-    a = row_start(d, lrow);
-    b = line_end(d, a);
-    segs = segs_of(e, d, lrow);
-    if (wseg >= segs) {
-      wseg = 0;
-      lrow++;
-      continue;
-    }
-    col0 = e->wrap ? wseg * (size_t)e->cols : d->col0;
-    col_max = e->wrap ? col0 + (size_t)e->cols : d->col0 + (size_t)e->cols;
-    if (lrow == d->caret_row)
-      plat_fill_rect(p, e->gutter, i * e->ch, w - e->gutter, e->ch, t->line);
-    if (wseg == 0) {
-      int nlen, nx, bi;
-      mote_bool has_bm = MOTE_FALSE;
-      for (bi = 0; bi < MAX_BOOKMARKS; bi++)
-        if (d->bm_row[bi] != (size_t)-1 && d->bm_row[bi] == lrow) {
-          has_bm = MOTE_TRUE;
-          break;
-        }
-      mote_snprintf(num, sizeof num, "%*lu%c", digits, (unsigned long)(lrow + 1),
-                    has_bm ? '*' : ' ');
-      nlen = (int)strlen(num);
-      /* right-align in gutter with one cell/gap before text */
-      nx = e->gutter - (nlen + 1) * e->cw;
-      if (nx < 0) nx = 0;
-      plat_draw_text(p, nx, i * e->ch, num, nlen, t->gutter_fg);
-    }
-    ncopy = (int)(b - a);
-    if (ncopy > (int)sizeof linebuf - 1) ncopy = (int)sizeof linebuf - 1;
-    {
-      int k;
-      for (k = 0; k < ncopy; k++) linebuf[k] = buf_at(&d->buf, a + (size_t)k);
-    }
-    linebuf[ncopy] = 0;
-    if (syn) {
-      int ml = in_ml;
-      nspans =
-          hl_line(syn, linebuf, (size_t)ncopy, ml, spans, HL_MAX_SPANS, &ml);
-      if (wseg + 1 >= segs) in_ml = ml;
-    }
-    draw_range(e, d, p, a, b, i * e->ch, col0, col_max, spans, nspans, t);
-    wseg++;
-    if (wseg >= segs) {
-      wseg = 0;
-      lrow++;
-    }
-  }
-
-  crow = d->caret_row;
-  ccol = d->caret_col;
-  caret_vis_vp(e, d, &cvr, &cvc, vrow_vp);
-  top = view_vrow0_vp(e, d, vrow_vp);
-  if (e->mode != MODE_HELP && e->mode != MODE_RECENT && e->mode != MODE_QUICKOPEN &&
-      cvr >= top &&
-      cvr < top + (size_t)e->rows) {
-    int cx, cy;
-    size_t sc = e->wrap ? cvc : (ccol >= d->col0 ? ccol - d->col0 : 0);
-    int ok = e->wrap || (ccol >= d->col0 && ccol < d->col0 + (size_t)e->cols);
-    if (ok) {
-      cx = e->gutter + (int)sc * e->cw;
-      cy = (int)(cvr - top) * e->ch;
-      if (!plat_set_caret(p, cx, cy, e->ch, MOTE_TRUE))
-        plat_fill_rect(p, cx, cy, e->cw > 0 ? e->cw : 1, e->ch, t->caret);
-    } else
-      plat_set_caret(p, 0, 0, e->ch, MOTE_FALSE);
-  } else {
-    plat_set_caret(p, 0, 0, e->ch, MOTE_FALSE);
-  }
-
-  sw = h - e->ch;
-  if (sw < 0) sw = 0;
-  plat_fill_rect(p, 0, sw, w, h - sw, t->status);
-  name = d->path[0] ? d->path : "[untitled]";
-  if (e->mode == MODE_OPEN || e->mode == MODE_SAVEAS || e->mode == MODE_FIND ||
-      e->mode == MODE_REPLACE || e->mode == MODE_GOTO || e->mode == MODE_QUICKOPEN) {
-    const char *pfx = prompt_bar_prefix(e->mode);
-    if (e->prompt[0])
-      mote_snprintf(bar, sizeof bar, "%s %s", pfx, e->prompt);
-    else
-      mote_snprintf(bar, sizeof bar, "%s", pfx);
-  }
-  else if (e->mode == MODE_QUITASK || e->mode == MODE_OPENASK ||
-           e->mode == MODE_CLOSEASK)
-    mote_snprintf(bar, sizeof bar, "%s", e->status);
-  else {
-    const char *base = path_base(name);
-    mote_snprintf(bar, sizeof bar, "[%d/%d] %s%s%s  %lu:%lu  %s  %s  %s", e->cur + 1,
-             e->ndocs, base, d->dirty ? "*" : "", d->readonly ? " RO" : "",
-             (unsigned long)(crow + 1), (unsigned long)(ccol + 1),
-             d->eol == EOL_CRLF ? "CRLF" : "LF",
-             hl_lang_name(syn), e->status[0] ? e->status : "F1 help");
-  }
-  /* Full-width status text (pad 1 cell when space allows). */
-  {
-    int pad = (e->cw > 0 && w > e->cw * 2) ? e->cw : 0;
-    draw_text_fit(p, pad, sw, bar, (int)strlen(bar), t->status_fg, w - pad,
-                  e->cw > 0 ? e->cw : 1);
-  }
-
-  if (e->mode == MODE_HELP || e->mode == MODE_RECENT || e->mode == MODE_QUICKOPEN) {
-    int nlines_h, box_h, box_y, box_w, max_h, max_lines, draw_n, text_w;
-    int mx, tx, pad, rows_fit, help_two, inset;
-    pad = e->cw > 0 ? e->cw : 1;
-    inset = pad > 1 ? pad / 2 : 1;
-    mx = pad * 2;
-    if (mx * 2 >= w) mx = pad;
-    if (mx < 1) mx = 1;
-    tx = mx + pad;
-    if (tx >= w - pad) tx = mx;
-    box_y = pad * 2;
-    if (box_y < e->ch) box_y = e->ch;
-    box_w = w - mx * 2;
-    if (box_w < pad * 4) box_w = w > 2 ? w - 2 : w;
-    if (box_w < 1) box_w = 1;
-    /* inner text width: left inset (tx-mx) + right pad cell */
-    text_w = box_w - (tx - mx) - pad;
-    if (text_w < e->cw) text_w = box_w - (tx - mx);
-    if (text_w < 1) text_w = 1;
-    max_h = sw - box_y - inset; /* border must not cover the status bar */
-    if (max_h < e->ch) max_h = e->ch;
-    rows_fit = e->ch > 0 ? max_h / e->ch : 1;
-    max_lines = rows_fit > 2 ? rows_fit - 2 : 1;
-    help_two = text_w / e->cw >= HELP_TWO_COL_W;
-    if (e->mode == MODE_HELP)
-      nlines_h = help_two ? (HELP_NL > HELP_NR ? HELP_NL : HELP_NR) : HELP_NL + HELP_NR;
-    else if (e->mode == MODE_RECENT)
-      nlines_h = e->nrecent + 1;
-    else
-      nlines_h = e->qf_n + 1;
-    draw_n = nlines_h;
-    if (draw_n > max_lines) draw_n = max_lines;
-    box_h = (draw_n + 2) * e->ch;
-    if (box_h > max_h) {
-      box_h = max_h - (max_h % (e->ch > 0 ? e->ch : 1));
-      if (box_h < e->ch) box_h = e->ch;
-      draw_n = e->ch > 0 ? box_h / e->ch - 2 : 1;
-      if (draw_n < 1) draw_n = 1;
-    }
-    {
-      int bx = mx > inset ? mx - inset : 0;
-      int by = box_y > inset ? box_y - inset : 0;
-      plat_fill_rect(p, bx, by, box_w + inset * 2, box_h + inset * 2, t->help_bd);
-    }
-    plat_fill_rect(p, mx, box_y, box_w, box_h, t->help_bg);
-    if (e->mode == MODE_HELP) {
-      if (e->help_top > nlines_h - draw_n) e->help_top = nlines_h - draw_n;
-      if (e->help_top < 0) e->help_top = 0;
-      for (i = 0; i < draw_n; i++) {
-        int ly = box_y + (i + 1) * e->ch;
-        int r = i + e->help_top;
-        if (ly + e->ch > box_y + box_h) break;
-        if (help_two) {
-          int x2 = tx + HELP_COL2 * e->cw;
-          if (r < HELP_NL)
-            draw_help_item(p, t, &help_left[r], tx, ly, HELP_KEY_W,
-                           (HELP_COL2 - 1) * e->cw, e->cw);
-          if (r < HELP_NR)
-            draw_help_item(p, t, &help_right[r], x2, ly, HELP_KEY2_W,
-                           text_w - HELP_COL2 * e->cw, e->cw);
-        } else if (r < HELP_NL + HELP_NR) {
-          const HelpItem *it = r < HELP_NL ? &help_left[r] : &help_right[r - HELP_NL];
-          draw_help_item(p, t, it, tx, ly, HELP_KEY_W, text_w, e->cw);
-        }
-      }
-      if (draw_n < nlines_h) {
-        int ly = box_y + (draw_n + 1) * e->ch;
-        const char *more = e->help_top + draw_n < nlines_h ? "  ... Down/PgDn" : "  ... Up/PgUp";
-        if (ly + e->ch <= box_y + box_h)
-          draw_text_fit(p, tx, ly, more, -1, t->gutter_fg, text_w, e->cw);
-      }
-    } else if (e->mode == MODE_RECENT) {
-      draw_text_fit(p, tx, box_y + e->ch, "Recent", 6, t->fg, text_w, e->cw);
-      for (i = 0; i < e->nrecent && (i + 1) < draw_n; i++) {
-        char line[300];
-        int ly = box_y + (i + 2) * e->ch;
-        if (ly + e->ch > box_y + box_h) break;
-        mote_snprintf(line, sizeof line, "%s%d %s",
-                      i == e->recent_sel ? "> " : "  ", i + 1,
-                      path_base(e->recent[i]));
-        draw_text_fit(p, tx, ly, line, (int)strlen(line),
-                      i == e->recent_sel ? t->kw : t->fg, text_w, e->cw);
-      }
-    } else {
-      draw_text_fit(p, tx, box_y + e->ch, "Go to file", 10, t->fg, text_w, e->cw);
-      for (i = 0; i < e->qf_n && (i + 1) < draw_n; i++) {
-        char line[300];
-        int ly = box_y + (i + 2) * e->ch;
-        if (ly + e->ch > box_y + box_h) break;
-        mote_snprintf(line, sizeof line, "%s%s",
-                      i == e->qf_sel ? "> " : "  ", e->qf_match[i]);
-        draw_text_fit(p, tx, ly, line, (int)strlen(line),
-                      i == e->qf_sel ? t->kw : t->fg, text_w, e->cw);
-      }
-    }
-  }
-
-  {
-    static char last[260];
-    char title[260];
-    const char *base = path_base(d->path[0] ? d->path : "untitled");
-    mote_snprintf(title, sizeof title, "%s%s — mote", d->dirty ? "*" : "", base);
-    if (strcmp(title, last) != 0) {
-      mote_snprintf(last, sizeof last, "%s", title);
-      plat_set_title(p, title);
-    }
-  }
-
+  update_title(e, p, d);
   plat_end_frame(p);
   e->need_draw = MOTE_FALSE;
 }

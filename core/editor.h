@@ -24,6 +24,15 @@ typedef enum {
   MODE_CLOSEASK
 } EdMode;
 
+/* What to do once the unsaved doc behind a QUITASK / OPENASK /
+   CLOSEASK question has been saved (possibly via Save As) or discarded. */
+typedef enum {
+  PENDING_NONE = 0,
+  PENDING_QUIT,
+  PENDING_OPEN, /* open Editor.pending_path */
+  PENDING_CLOSE
+} PendingAction;
+
 #define MAX_BOOKMARKS 4
 #define QF_MAX 64
 #define QF_POOL 256
@@ -46,11 +55,9 @@ typedef struct {
   size_t caret, sel_anchor, row0, col0, wrap0;
   size_t pref_col;
   size_t caret_row, caret_col;
-  size_t row0_pos;
-  mote_bool row0_valid;
   size_t match_a, match_b;
   size_t bracket_a, bracket_b;
-  size_t bm_row[MAX_BOOKMARKS]; /* line index, (size_t)-1 = unset */
+  size_t bm_row[MAX_BOOKMARKS]; /* line index, (size_t)-1 = unset (NO_POS) */
   int hl_in_ml;
   size_t hl_ml_row;
   mote_bool hl_ml_valid;
@@ -61,8 +68,7 @@ typedef struct {
   int ndocs, cur;
   mote_bool need_draw;
   mote_bool want_quit;
-  mote_bool quit_after_save;
-  mote_bool close_after_save;
+  PendingAction pending;
   EdMode mode;
   char prompt[256];
   char status[96];
@@ -82,9 +88,10 @@ typedef struct {
   char recent[MAX_RECENT][1024];
   int nrecent, recent_sel;
   int help_top;
-  size_t *vrow_cache;
-  size_t vrow_n;
+  size_t *vrow_cache; /* wrap mode: first visual row of each line */
+  size_t vrow_n;      /* lines in vrow_cache; 0 = rebuild */
   int vrow_cols;
+  char title[260];    /* last window title sent to the platform */
 } Editor;
 
 mote_bool ed_init(Editor *e);
