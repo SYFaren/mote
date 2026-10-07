@@ -110,7 +110,7 @@ release-linux: console x11 sdl wayland fbdev
 	  "overlay/wayland/build/mote.packed:$(CAT)/linux/amd64/wayland/mote.upx:$(DIST)/flat/mote-linux-wayland.upx:$(DIST)/flat/mote-linux-amd64-wayland.upx" \
 	  "overlay/fbdev/build/mote.packed:$(CAT)/linux/amd64/fbdev/mote.upx:$(DIST)/flat/mote-linux-fbdev.upx:$(DIST)/flat/mote-linux-amd64-fbdev.upx"; do \
 	  src=$${pair%%:*}; rest=$${pair#*:}; dst=$${rest%%:*}; rest2=$${rest#*:}; flat=$${rest2%%:*}; flat2=$${rest2#*:}; \
-	  if [ -f "$$src" ]; then cp -f "$$src" "$$dst" "$$flat" "$$flat2"; fi; \
+	  if [ -f "$$src" ]; then for d in "$$dst" "$$flat" "$$flat2"; do cp -f "$$src" "$$d" || exit 1; done; fi; \
 	done
 	cp -f overlay/x11/build/mote $(DIST)/flat/mote-linux-x11
 	cp -f overlay/console/build/mote $(DIST)/flat/mote-linux-console
