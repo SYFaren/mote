@@ -5,8 +5,8 @@
 
 #define MOTE_NAME "mote"
 #define MOTE_AUTHOR "SYFaren"
-#define MOTE_VERSION "2.1.1"
-#define MOTE_BUILD "2026-10-07"
+#define MOTE_VERSION "2.1.2"
+#define MOTE_BUILD "2026-10-09"
 #define MOTE_FONT_PX 15 /* default font size, Ctrl+0 resets to it */
 #define MOTE_FONT_MIN 8
 #define MOTE_FONT_MAX 48
