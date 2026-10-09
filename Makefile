@@ -186,19 +186,18 @@ release-extra:
 	  $(MAKE) -C overlay/wasm; \
 	  cp -f overlay/wasm/build/mote.html overlay/wasm/build/mote.js \
 	        overlay/wasm/build/mote.wasm $(CAT)/web/wasm/ 2>/dev/null || true; \
-	  cp -f overlay/wasm/build/mote.data $(CAT)/web/wasm/ 2>/dev/null || true; \
 	  printf '%s\n' \
 	    "mote WebAssembly (SDL2)" \
 	    "" \
 	    "Unpack mote-web.zip and open mote.html via a local HTTP server" \
-	    "(file:// will not load .wasm / .data)." \
+	    "(file:// will not load .wasm)." \
 	    "" \
 	    "  python3 -m http.server 8765" \
 	    "  → http://127.0.0.1:8765/mote.html" \
 	    > $(CAT)/web/wasm/README.txt; \
 	  rm -f $(DIST)/flat/mote-web.zip; \
 	  (cd $(CAT)/web/wasm && zip -q ../../../flat/mote-web.zip \
-	    mote.html mote.js mote.wasm mote.data README.txt); \
+	    mote.html mote.js mote.wasm README.txt); \
 	  ls -la $(DIST)/flat/mote-web.zip; \
 	else echo "(skip wasm — no emcc)"; fi
 	@if pkg-config --exists sdl3; then \

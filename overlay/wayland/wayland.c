@@ -48,7 +48,6 @@ struct Plat {
   struct WlBuf slot[2];
   int slot_w, slot_h;
   int configured;
-  int running;
   int mx, my;
   char *clip;
   size_t clip_n;
@@ -193,7 +192,6 @@ static void xdg_toplevel_close(void *data, struct xdg_toplevel *top) {
   Plat *p = (Plat *)data;
   PlatEvent e;
   (void)top;
-  p->running = 0;
   memset(&e, 0, sizeof e);
   e.type = PE_QUIT;
   evq_push(&p->q, &e);
@@ -523,7 +521,6 @@ Plat *plat_create(const char *title, int w, int h) {
   Plat *p = (Plat *)calloc(1, sizeof(Plat));
   if (!p) return NULL;
   p->slot[0].fd = p->slot[1].fd = -1;
-  p->running = 1;
   p->dpy = wl_display_connect(NULL);
   if (!p->dpy) {
     free(p);
@@ -617,12 +614,7 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
   wl_display_dispatch_pending(p->dpy);
   if (evq_pop(&p->q, ev)) return MOTE_TRUE;
   key_repeat_tick(p);
-  if (evq_pop(&p->q, ev)) return MOTE_TRUE;
-  if (!p->running) {
-    ev->type = PE_QUIT;
-    return MOTE_TRUE;
-  }
-  return MOTE_FALSE;
+  return evq_pop(&p->q, ev);
 }
 
 void plat_get_size(Plat *p, int *w, int *h) {

@@ -30,7 +30,7 @@ struct Plat {
   char *clip;
   size_t clip_n;
   EvQueue q;
-  mote_bool ctrl, shift, alt, quit;
+  mote_bool ctrl, shift, alt;
 };
 
 static void key_nav(Plat *p, PlatKey k) {
@@ -249,16 +249,11 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
     unsigned char c;
     while (read(STDIN_FILENO, &c, 1) == 1) {
       if (p->ev_fd >= 0) continue;
-      if (c == 3 || c == 17) p->quit = MOTE_TRUE;
+      if (c == 3 || c == 17) evq_key(&p->q, PK_QUIT, MOTE_TRUE, MOTE_FALSE);
       else if (c == 0x1b) key_nav(p, PK_ESCAPE);
     }
   }
-  if (evq_pop(&p->q, ev)) return MOTE_TRUE;
-  if (p->quit) {
-    ev->type = PE_QUIT;
-    return MOTE_TRUE;
-  }
-  return MOTE_FALSE;
+  return evq_pop(&p->q, ev);
 }
 
 void plat_get_size(Plat *p, int *w, int *h) {

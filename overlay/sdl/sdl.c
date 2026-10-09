@@ -57,7 +57,6 @@ struct Plat {
   SDL_Texture *tex;
 #endif
   EvQueue q;
-  mote_bool quit;
 };
 
 /* ASCII of a key for the shared keymap. Printable SDL keycodes are their
@@ -319,7 +318,6 @@ static mote_bool translate(Plat *p, const SDL_Event *se, PlatEvent *ev) {
   }
   switch (se->type) {
   case SDL_EVENT_QUIT:
-    p->quit = MOTE_TRUE;
     ev->type = PE_QUIT;
     return MOTE_TRUE;
   case SDL_EVENT_KEY_DOWN:
@@ -365,10 +363,6 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
   if (evq_pop(&p->q, ev)) return MOTE_TRUE;
   while (SDL_PollEvent(&se))
     if (translate(p, &se, ev)) return MOTE_TRUE;
-  if (p->quit) {
-    ev->type = PE_QUIT;
-    return MOTE_TRUE;
-  }
   return MOTE_FALSE;
 }
 

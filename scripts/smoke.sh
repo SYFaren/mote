@@ -56,8 +56,7 @@ fi
 
 if command -v emcc >/dev/null 2>&1; then
   make -C overlay/wasm >/dev/null
-  [ -f overlay/wasm/build/mote.wasm ] && [ -f overlay/wasm/build/mote.html ] && \
-    [ -f overlay/wasm/build/mote.data ] && ok "wasm artifacts" || bad "wasm artifacts"
+  [ -f overlay/wasm/build/mote.wasm ] && [ -f overlay/wasm/build/mote.html ] && ok "wasm artifacts" || bad "wasm artifacts"
 else
   ok "emcc skipped"
 fi
