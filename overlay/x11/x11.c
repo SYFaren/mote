@@ -1,7 +1,7 @@
 #include "platform.h"
 #include "keymap.h"
 #include "common.h"
-#include "utf8.h"
+#include "soft.h"
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -14,16 +14,20 @@
 #include <stdio.h>
 #include <poll.h>
 
+/* Text goes through the soft renderer and its built-in font: core X fonts
+   are often Latin-1 only (Xwayland ships just "fixed") and come in few
+   sizes. */
 struct Plat {
   Display *dpy;
   Window win;
-  Pixmap back;
   GC gc;
-  XFontStruct *font;
+  SoftFb fb;
+  XImage *img;
+  mote_bool img_shared; /* img->data is fb.px */
   XIM xim;
   XIC xic;
-  Atom wm_delete, clipboard, utf8, targets, incr;
-  int width, height, depth, font_px;
+  Atom wm_delete, wm_name, clipboard, utf8, targets, incr;
+  int width, height, depth;
   long event_mask;
   char *clip_store;
   size_t clip_len;
@@ -35,44 +39,36 @@ struct Plat {
   mote_bool incr_active;
 };
 
-static void load_font(Plat *p, int px) {
-  char pat[128];
-  XFontStruct *nf = NULL;
-  int tries[] = {0, -1, 1, -2, 2, -3, 3, 4, -4};
-  int i;
-  if (px < MOTE_FONT_MIN) px = MOTE_FONT_MIN;
-  if (px > MOTE_FONT_MAX) px = MOTE_FONT_MAX;
-  for (i = 0; i < (int)(sizeof tries / sizeof tries[0]); i++) {
-    int sz = px + tries[i];
-    if (sz < 8) continue;
-    snprintf(pat, sizeof pat,
-             "-misc-fixed-medium-r-normal--%d-*-*-*-*-*-iso10646-1", sz);
-    nf = XLoadQueryFont(p->dpy, pat);
-    if (nf) break;
-    snprintf(pat, sizeof pat, "-*-*-medium-r-normal--%d-*-*-*-*-*-iso10646-1",
-             sz);
-    nf = XLoadQueryFont(p->dpy, pat);
-    if (nf) break;
-  }
-  if (!nf) nf = XLoadQueryFont(p->dpy, "9x15");
-  if (!nf) nf = XLoadQueryFont(p->dpy, "fixed");
-  if (!nf) nf = XLoadQueryFont(p->dpy, "6x13");
-  if (!nf) return;
-  if (p->font) XFreeFont(p->dpy, p->font);
-  p->font = nf;
-  p->font_px = px;
-  XSetFont(p->dpy, p->gc, p->font->fid);
+static void free_image(Plat *p) {
+  if (!p->img) return;
+  if (p->img_shared) p->img->data = NULL; /* fb.px is not XDestroyImage's to free */
+  XDestroyImage(p->img);
+  p->img = NULL;
 }
 
-static void ensure_back(Plat *p) {
-  int w = p->width > 0 ? p->width : 1;
-  int h = p->height > 0 ? p->height : 1;
-  if (p->back) {
-    XFreePixmap(p->dpy, p->back);
-    p->back = None;
+/* Framebuffer and XImage at the window size. 0x00RRGGBB pixels go out as
+   they are on the usual 24/32-bit visual; other visuals get converted. */
+static mote_bool ensure_image(Plat *p) {
+  Visual *v = DefaultVisual(p->dpy, DefaultScreen(p->dpy));
+  unsigned one = 1;
+  free_image(p);
+  if (!soft_resize(&p->fb, p->width, p->height)) return MOTE_FALSE;
+  p->img = XCreateImage(p->dpy, v, (unsigned)p->depth, ZPixmap, 0, NULL,
+                        (unsigned)p->width, (unsigned)p->height, 32, 0);
+  if (!p->img) return MOTE_FALSE;
+  p->img_shared = p->img->bits_per_pixel == 32 && v->red_mask == 0xFF0000UL &&
+                  v->green_mask == 0xFF00UL && v->blue_mask == 0xFFUL;
+  if (p->img_shared) {
+    p->img->data = (char *)p->fb.px;
+    p->img->byte_order = *(unsigned char *)&one ? LSBFirst : MSBFirst;
+    return MOTE_TRUE;
   }
-  p->back = XCreatePixmap(p->dpy, p->win, (unsigned)w, (unsigned)h,
-                          (unsigned)p->depth);
+  p->img->data = (char *)malloc((size_t)p->img->bytes_per_line * (size_t)p->height);
+  if (!p->img->data) {
+    free_image(p);
+    return MOTE_FALSE;
+  }
+  return MOTE_TRUE;
 }
 
 static unsigned long scale_chan(unsigned c, unsigned long mask) {
@@ -92,26 +88,17 @@ static unsigned long scale_chan(unsigned c, unsigned long mask) {
   return (((unsigned long)c * ((1UL << bits) - 1UL) / 255UL) << shift) & mask;
 }
 
-static unsigned long rgb_pixel(Plat *p, mote_u32 rgb) {
+static void convert_image(Plat *p) {
   Visual *v = DefaultVisual(p->dpy, DefaultScreen(p->dpy));
-  unsigned r = (rgb >> 16) & 0xFF;
-  unsigned g = (rgb >> 8) & 0xFF;
-  unsigned b = rgb & 0xFF;
-  /* TrueColor needs no XAllocColor, which would leak colormap entries. */
-  if (v && (v->class == TrueColor || v->class == DirectColor)) {
-    return scale_chan(r, v->red_mask) | scale_chan(g, v->green_mask) |
-           scale_chan(b, v->blue_mask);
-  }
-  {
-    XColor c;
-    Colormap cm = DefaultColormap(p->dpy, DefaultScreen(p->dpy));
-    c.red = (unsigned short)(r * 257);
-    c.green = (unsigned short)(g * 257);
-    c.blue = (unsigned short)(b * 257);
-    c.flags = DoRed | DoGreen | DoBlue;
-    if (!XAllocColor(p->dpy, cm, &c)) return BlackPixel(p->dpy, DefaultScreen(p->dpy));
-    return c.pixel;
-  }
+  int x, y;
+  for (y = 0; y < p->fb.h; y++)
+    for (x = 0; x < p->fb.w; x++) {
+      mote_u32 c = p->fb.px[(size_t)y * (size_t)p->fb.w + (size_t)x];
+      XPutPixel(p->img, x, y,
+                scale_chan((c >> 16) & 0xFF, v->red_mask) |
+                    scale_chan((c >> 8) & 0xFF, v->green_mask) |
+                    scale_chan(c & 0xFF, v->blue_mask));
+    }
 }
 
 static int x_io_error(Display *d) {
@@ -143,10 +130,10 @@ Plat *plat_create(const char *title, int w, int h) {
                          CopyFromParent, CWEventMask | CWBackingStore, &swa);
   gcv.graphics_exposures = False;
   p->gc = XCreateGC(p->dpy, p->win, GCGraphicsExposures, &gcv);
-  p->font_px = MOTE_FONT_PX;
-  load_font(p, 15);
+  soft_set_font_px(&p->fb, MOTE_FONT_PX);
   p->wm_delete = XInternAtom(p->dpy, "WM_DELETE_WINDOW", False);
   XSetWMProtocols(p->dpy, p->win, &p->wm_delete, 1);
+  p->wm_name = XInternAtom(p->dpy, "_NET_WM_NAME", False);
   p->clipboard = XInternAtom(p->dpy, "CLIPBOARD", False);
   p->utf8 = XInternAtom(p->dpy, "UTF8_STRING", False);
   p->targets = XInternAtom(p->dpy, "TARGETS", False);
@@ -157,8 +144,11 @@ Plat *plat_create(const char *title, int w, int h) {
                        XIMPreeditNothing | XIMStatusNothing, XNClientWindow,
                        p->win, XNFocusWindow, p->win, NULL);
   }
-  XStoreName(p->dpy, p->win, title);
-  ensure_back(p);
+  plat_set_title(p, title);
+  if (!ensure_image(p)) {
+    plat_destroy(p);
+    return NULL;
+  }
   XMapWindow(p->dpy, p->win);
   XFlush(p->dpy);
   return p;
@@ -169,8 +159,8 @@ void plat_destroy(Plat *p) {
   free(p->clip_store);
   if (p->xic) XDestroyIC(p->xic);
   if (p->xim) XCloseIM(p->xim);
-  if (p->back) XFreePixmap(p->dpy, p->back);
-  if (p->font) XFreeFont(p->dpy, p->font);
+  free_image(p);
+  soft_free(&p->fb);
   XFreeGC(p->dpy, p->gc);
   XDestroyWindow(p->dpy, p->win);
   XCloseDisplay(p->dpy);
@@ -188,79 +178,31 @@ void plat_get_size(Plat *p, int *w, int *h) {
   *h = p->height;
 }
 
-int plat_font_w(Plat *p) {
-  return p->font ? p->font->max_bounds.width : 9;
-}
-
-int plat_font_h(Plat *p) {
-  return p->font ? p->font->ascent + p->font->descent : 15;
-}
-
-void plat_set_font_px(Plat *p, int px) {
-  if (!p || !p->dpy) return;
-  load_font(p, px);
-}
-
-int plat_font_px(Plat *p) { return p && p->font_px > 0 ? p->font_px : 15; }
-
+int plat_font_w(Plat *p) { return soft_font_w(&p->fb); }
+int plat_font_h(Plat *p) { return soft_font_h(&p->fb); }
+void plat_set_font_px(Plat *p, int px) { soft_set_font_px(&p->fb, px); }
+int plat_font_px(Plat *p) { return p->fb.font_px; }
 void plat_begin_frame(Plat *p) { (void)p; }
-
-void plat_clear(Plat *p, mote_u32 rgb) {
-  if (!p->back) return;
-  XSetForeground(p->dpy, p->gc, rgb_pixel(p, rgb));
-  XFillRectangle(p->dpy, p->back, p->gc, 0, 0, (unsigned)p->width,
-                 (unsigned)p->height);
-}
-
+void plat_clear(Plat *p, mote_u32 rgb) { soft_clear(&p->fb, rgb); }
 void plat_fill_rect(Plat *p, int x, int y, int w, int h, mote_u32 rgb) {
-  if (!p->back || w <= 0 || h <= 0) return;
-  XSetForeground(p->dpy, p->gc, rgb_pixel(p, rgb));
-  XFillRectangle(p->dpy, p->back, p->gc, x, y, (unsigned)w, (unsigned)h);
+  soft_fill_rect(&p->fb, x, y, w, h, rgb);
 }
-
 void plat_draw_text(Plat *p, int x, int y, const char *s, int n, mote_u32 rgb) {
-  int baseline, i = 0, o = 0;
-  XChar2b stack[128];
-  XChar2b *chars = stack;
-  int capa = 128;
-  if (!p->back || !s || n <= 0) return;
-  baseline = y + (p->font ? p->font->ascent : 12);
-  XSetForeground(p->dpy, p->gc, rgb_pixel(p, rgb));
-  while (i < n) {
-    mote_u32 cp;
-    int len = utf8_decode(s + i, (size_t)(n - i), &cp);
-    if (len <= 0) {
-      i++;
-      continue;
-    }
-    if (o >= capa) {
-      int nc = capa * 2;
-      XChar2b *nw =
-          (XChar2b *)realloc(chars == stack ? NULL : chars, (size_t)nc * sizeof(XChar2b));
-      if (!nw) break;
-      if (chars == stack) memcpy(nw, stack, (size_t)o * sizeof(XChar2b));
-      chars = nw;
-      capa = nc;
-    }
-    if (cp > 0xFFFFu) cp = (mote_u32)'?';
-    chars[o].byte1 = (unsigned char)((cp >> 8) & 0xff);
-    chars[o].byte2 = (unsigned char)(cp & 0xff);
-    o++;
-    i += len;
-  }
-  if (o > 0) XDrawString16(p->dpy, p->back, p->gc, x, baseline, chars, o);
-  if (chars != stack) free(chars);
+  soft_draw_text(&p->fb, x, y, s, n, rgb);
 }
 
 void plat_end_frame(Plat *p) {
-  if (!p->back) return;
-  XCopyArea(p->dpy, p->back, p->win, p->gc, 0, 0, (unsigned)p->width,
-            (unsigned)p->height, 0, 0);
+  if (!p->img) return;
+  if (!p->img_shared) convert_image(p);
+  XPutImage(p->dpy, p->win, p->gc, p->img, 0, 0, 0, 0, (unsigned)p->width,
+            (unsigned)p->height);
   XFlush(p->dpy);
 }
 
 void plat_set_title(Plat *p, const char *title) {
   XStoreName(p->dpy, p->win, title);
+  XChangeProperty(p->dpy, p->win, p->wm_name, p->utf8, 8, PropModeReplace,
+                  (const unsigned char *)title, (int)strlen(title));
 }
 
 mote_bool plat_set_caret(Plat *p, int x, int y, int h, mote_bool on) {
@@ -480,9 +422,10 @@ static void map_key(XKeyEvent *xk, KeySym ks, PlatEvent *ev) {
   mote_bool ctrl = (xk->state & ControlMask) != 0;
   mote_bool shift = (xk->state & ShiftMask) != 0;
   mote_bool alt = (xk->state & Mod1Mask) != 0;
-  int ch = ks_char(ks);
-  /* non-Latin layout: take the key's first-group (Latin) symbol for shortcuts */
-  if (!ch && (ctrl || alt)) ch = ks_char(XLookupKeysym(xk, 0));
+  int ch = ks_char(ks), i;
+  /* Non-Latin layout: shortcuts use the key's Latin symbol from whichever
+     group has one; the Latin layout need not be the first. */
+  for (i = 0; !ch && (ctrl || alt) && i < 8; i += 2) ch = ks_char(XLookupKeysym(xk, i));
   ev->type = PE_KEY;
   ev->ctrl = ctrl;
   ev->shift = shift;
@@ -539,7 +482,7 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
         if (nh > 16384) nh = 16384;
         p->width = nw;
         p->height = nh;
-        ensure_back(p);
+        ensure_image(p);
         ev->type = PE_EXPOSE;
         return MOTE_TRUE;
       }

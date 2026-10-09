@@ -7,15 +7,22 @@
 #include <fcntl.h>
 #include <linux/fb.h>
 #include <linux/input.h>
+#include <linux/kd.h>
+#include <linux/major.h>
+#include <linux/vt.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <termios.h>
 #include <unistd.h>
 #include <dirent.h>
+
+#define MAX_KBD 8
 
 struct Plat {
   SoftFb fb;
@@ -23,10 +30,14 @@ struct Plat {
   void *fb_map;
   size_t fb_map_sz;
   int fb_w, fb_h, fb_bpp, fb_line;
+  int fb_r, fb_g, fb_b; /* channel bit offsets */
   int kx, ky; /* crop origin when window < screen */
-  int ev_fd;
+  int ev_fd[MAX_KBD];
+  int nev;
+  int vt; /* our console number, 0 if unknown */
+  mote_bool away; /* another console is showing */
   struct termios saved;
-  mote_bool raw;
+  mote_bool raw, graphics;
   char *clip;
   size_t clip_n;
   EvQueue q;
@@ -41,30 +52,33 @@ static void key_nav(Plat *p, PlatKey k) {
 #define NLONGS(n) (((n) + LONG_BITS - 1) / LONG_BITS)
 #define TEST_BIT(arr, b) (((arr)[(b) / LONG_BITS] >> ((b) % LONG_BITS)) & 1UL)
 
-/* First /dev/input/event* that has letter keys. */
-static int open_keyboard(void) {
+static mote_bool has_letter_keys(int fd) {
+  unsigned long ev[NLONGS(EV_MAX + 1)], keys[NLONGS(KEY_MAX + 1)];
+  memset(ev, 0, sizeof ev);
+  memset(keys, 0, sizeof keys);
+  return ioctl(fd, EVIOCGBIT(0, sizeof ev), ev) >= 0 && TEST_BIT(ev, EV_KEY) &&
+         ioctl(fd, EVIOCGBIT(EV_KEY, sizeof keys), keys) >= 0 && TEST_BIT(keys, KEY_A) &&
+         TEST_BIT(keys, KEY_Z) && TEST_BIT(keys, KEY_SPACE) && TEST_BIT(keys, KEY_ENTER);
+}
+
+/* Every /dev/input/event* with letter keys. Gaming mice claim a whole
+   keyboard too and one keyboard can be split over several devices, so the
+   first match is often not the one being typed on. */
+static void open_keyboards(Plat *p) {
   DIR *d = opendir("/dev/input");
   struct dirent *e;
-  int found = -1;
-  if (!d) return -1;
-  while (found < 0 && (e = readdir(d))) {
+  if (!d) return;
+  while (p->nev < MAX_KBD && (e = readdir(d))) {
     char path[256];
-    unsigned long ev[NLONGS(EV_MAX + 1)], keys[NLONGS(KEY_MAX + 1)];
     int fd;
     if (strncmp(e->d_name, "event", 5) != 0) continue;
     snprintf(path, sizeof path, "/dev/input/%s", e->d_name);
     fd = open(path, O_RDONLY | O_NONBLOCK);
     if (fd < 0) continue;
-    memset(ev, 0, sizeof ev);
-    memset(keys, 0, sizeof keys);
-    if (ioctl(fd, EVIOCGBIT(0, sizeof ev), ev) >= 0 && TEST_BIT(ev, EV_KEY) &&
-        ioctl(fd, EVIOCGBIT(EV_KEY, sizeof keys), keys) >= 0 && TEST_BIT(keys, KEY_A))
-      found = fd;
-    else
-      close(fd);
+    if (has_letter_keys(fd)) p->ev_fd[p->nev++] = fd;
+    else close(fd);
   }
   closedir(d);
-  return found;
 }
 
 static void tty_raw(Plat *p) {
@@ -140,7 +154,7 @@ static void map_linux_key(Plat *p, int code, int value) {
   case KEY_RIGHTALT: p->alt = value != 0; return;
   default: break;
   }
-  if (value == 0) return;
+  if (value == 0 || p->away) return;
   ch = us_char(code, MOTE_FALSE);
   if (p->alt && !p->ctrl && ch) pk = key_alt(ch);
   else if (p->ctrl && ch) pk = key_ctrl(ch, p->shift);
@@ -158,30 +172,53 @@ static void map_linux_key(Plat *p, int code, int value) {
   }
 }
 
+/* Stop the console from drawing its text and cursor over the editor. */
+static void vt_graphics(Plat *p) {
+  if (ioctl(STDIN_FILENO, KDSETMODE, KD_GRAPHICS) == 0) p->graphics = MOTE_TRUE;
+}
+
+static mote_bool on_vt(void) {
+  int mode;
+  return ioctl(STDIN_FILENO, KDGETMODE, &mode) == 0;
+}
+
+static int vt_number(void) {
+  struct stat st;
+  if (fstat(STDIN_FILENO, &st) != 0 || major(st.st_rdev) != TTY_MAJOR) return 0;
+  return (int)minor(st.st_rdev);
+}
+
+/* Evdev sees keys typed on every console, so while the user is on another
+   one (say the desktop) input is dropped, and coming back repaints. */
+static void vt_check_away(Plat *p) {
+  struct vt_stat vs;
+  mote_bool away;
+  if (!p->vt || ioctl(STDIN_FILENO, VT_GETSTATE, &vs) != 0) return;
+  away = vs.v_active != p->vt;
+  if (p->away && !away) evq_type(&p->q, PE_EXPOSE);
+  p->away = away;
+}
+
 Plat *plat_create(const char *title, int w, int h) {
-  Plat *p = (Plat *)calloc(1, sizeof(Plat));
+  Plat *p;
   struct fb_var_screeninfo vinfo;
   struct fb_fix_screeninfo finfo;
-  const char *dev;
+  const char *dev = getenv("MOTE_FB");
   (void)title;
-  if (!p) return NULL;
-  p->fb_fd = -1;
-  p->ev_fd = -1;
-  soft_set_font_px(&p->fb, MOTE_FONT_PX);
-  if (!soft_resize(&p->fb, w, h)) {
-    free(p);
-    return NULL;
-  }
-  dev = getenv("MOTE_FB");
+  /* Under X11 or Wayland the framebuffer is hidden behind the compositor
+     and evdev would read keys typed into other windows. */
+  if (!dev && !on_vt()) return NULL;
   if (!dev) dev = "/dev/fb0";
+  p = (Plat *)calloc(1, sizeof(Plat));
+  if (!p) return NULL;
   p->fb_fd = open(dev, O_RDWR);
   if (p->fb_fd < 0) {
-    free(p->fb.px);
     free(p);
     return NULL;
   }
   if (ioctl(p->fb_fd, FBIOGET_VSCREENINFO, &vinfo) < 0 ||
-      ioctl(p->fb_fd, FBIOGET_FSCREENINFO, &finfo) < 0) {
+      ioctl(p->fb_fd, FBIOGET_FSCREENINFO, &finfo) < 0 ||
+      (vinfo.bits_per_pixel != 32 && vinfo.bits_per_pixel != 16)) {
     plat_destroy(p);
     return NULL;
   }
@@ -189,41 +226,51 @@ Plat *plat_create(const char *title, int w, int h) {
   p->fb_h = (int)vinfo.yres;
   p->fb_bpp = (int)vinfo.bits_per_pixel;
   p->fb_line = (int)finfo.line_length;
+  p->fb_r = (int)vinfo.red.offset;
+  p->fb_g = (int)vinfo.green.offset;
+  p->fb_b = (int)vinfo.blue.offset;
   p->fb_map_sz = (size_t)finfo.smem_len;
   p->fb_map = mmap(NULL, p->fb_map_sz, PROT_READ | PROT_WRITE, MAP_SHARED, p->fb_fd, 0);
   if (p->fb_map == MAP_FAILED) {
     plat_destroy(p);
     return NULL;
   }
-  if (p->fb.w > p->fb_w) soft_resize(&p->fb, p->fb_w, p->fb.h);
-  if (p->fb.h > p->fb_h) soft_resize(&p->fb, p->fb.w, p->fb_h);
-  p->kx = (p->fb_w - p->fb.w) / 2;
-  p->ky = (p->fb_h - p->fb.h) / 2;
-  if (p->kx < 0) p->kx = 0;
-  if (p->ky < 0) p->ky = 0;
-  p->ev_fd = open_keyboard();
+  if (w <= 0 || w > p->fb_w) w = p->fb_w;
+  if (h <= 0 || h > p->fb_h) h = p->fb_h;
+  soft_set_font_px(&p->fb, MOTE_FONT_PX);
+  if (!soft_resize(&p->fb, w, h)) {
+    plat_destroy(p);
+    return NULL;
+  }
+  p->kx = (int)vinfo.xoffset + (p->fb_w - w) / 2;
+  p->ky = (int)vinfo.yoffset + (p->fb_h - h) / 2;
+  p->vt = vt_number();
+  open_keyboards(p);
   tty_raw(p);
+  vt_graphics(p);
   evq_type(&p->q, PE_EXPOSE);
   return p;
 }
 
 void plat_destroy(Plat *p) {
+  int i;
   if (!p) return;
+  if (p->graphics) ioctl(STDIN_FILENO, KDSETMODE, KD_TEXT);
   if (p->raw) tcsetattr(STDIN_FILENO, TCSANOW, &p->saved);
   free(p->clip);
   if (p->fb_map && p->fb_map != MAP_FAILED) munmap(p->fb_map, p->fb_map_sz);
   if (p->fb_fd >= 0) close(p->fb_fd);
-  if (p->ev_fd >= 0) close(p->ev_fd);
+  for (i = 0; i < p->nev; i++) close(p->ev_fd[i]);
   soft_free(&p->fb);
   free(p);
 }
 
 void plat_wait(Plat *p) {
-  struct pollfd pf[2];
-  int n = 0;
+  struct pollfd pf[MAX_KBD + 1];
+  int n = 0, i;
   if (p->q.n > 0) return;
-  if (p->ev_fd >= 0) {
-    pf[n].fd = p->ev_fd;
+  for (i = 0; i < p->nev; i++) {
+    pf[n].fd = p->ev_fd[i];
     pf[n].events = POLLIN;
     n++;
   }
@@ -236,10 +283,12 @@ void plat_wait(Plat *p) {
 }
 
 mote_bool plat_poll(Plat *p, PlatEvent *ev) {
+  int i;
   if (evq_pop(&p->q, ev)) return MOTE_TRUE;
-  if (p->ev_fd >= 0) {
+  vt_check_away(p);
+  for (i = 0; i < p->nev; i++) {
     struct input_event ie;
-    while (read(p->ev_fd, &ie, sizeof ie) == (ssize_t)sizeof ie) {
+    while (read(p->ev_fd[i], &ie, sizeof ie) == (ssize_t)sizeof ie) {
       if (ie.type == EV_KEY) map_linux_key(p, ie.code, ie.value);
     }
   }
@@ -248,7 +297,7 @@ mote_bool plat_poll(Plat *p, PlatEvent *ev) {
   if (isatty(STDIN_FILENO)) {
     unsigned char c;
     while (read(STDIN_FILENO, &c, 1) == 1) {
-      if (p->ev_fd >= 0) continue;
+      if (p->nev > 0) continue;
       if (c == 3 || c == 17) evq_key(&p->q, PK_QUIT, MOTE_TRUE, MOTE_FALSE);
       else if (c == 0x1b) key_nav(p, PK_ESCAPE);
     }
@@ -273,21 +322,26 @@ void plat_draw_text(Plat *p, int x, int y, const char *s, int n, mote_u32 rgb) {
   soft_draw_text(&p->fb, x, y, s, n, rgb);
 }
 void plat_end_frame(Plat *p) {
-  int y;
+  int y, x;
   soft_blit_caret(&p->fb);
-  if (!p->fb_map || !p->fb.px) return;
+  if (!p->fb_map || !p->fb.px || p->away) return;
   for (y = 0; y < p->fb.h; y++) {
-    int dy = p->ky + y;
-    if (dy < 0 || dy >= p->fb_h) continue;
-    if (p->fb_bpp == 32) {
-      memcpy((char *)p->fb_map + dy * p->fb_line + p->kx * 4,
-             p->fb.px + (size_t)y * (size_t)p->fb.w, (size_t)p->fb.w * 4);
-    } else if (p->fb_bpp == 16) {
-      int x;
-      unsigned short *dst =
-          (unsigned short *)((char *)p->fb_map + dy * p->fb_line + p->kx * 2);
+    size_t off = (size_t)(p->ky + y) * (size_t)p->fb_line + (size_t)p->kx * (size_t)(p->fb_bpp / 8);
+    const mote_u32 *src = p->fb.px + (size_t)y * (size_t)p->fb.w;
+    if (off + (size_t)p->fb.w * (size_t)(p->fb_bpp / 8) > p->fb_map_sz) break;
+    if (p->fb_bpp == 32 && p->fb_r == 16 && p->fb_g == 8 && p->fb_b == 0) {
+      memcpy((char *)p->fb_map + off, src, (size_t)p->fb.w * 4);
+    } else if (p->fb_bpp == 32) {
+      mote_u32 *dst = (mote_u32 *)((char *)p->fb_map + off);
       for (x = 0; x < p->fb.w; x++) {
-        mote_u32 c = p->fb.px[(size_t)y * (size_t)p->fb.w + (size_t)x];
+        mote_u32 c = src[x];
+        dst[x] = ((c >> 16 & 0xFF) << p->fb_r) | ((c >> 8 & 0xFF) << p->fb_g) |
+                 ((c & 0xFF) << p->fb_b);
+      }
+    } else {
+      unsigned short *dst = (unsigned short *)((char *)p->fb_map + off);
+      for (x = 0; x < p->fb.w; x++) {
+        mote_u32 c = src[x];
         unsigned r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
         dst[x] = (unsigned short)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
       }

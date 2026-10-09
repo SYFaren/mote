@@ -213,7 +213,7 @@ Environment variables:
 | `MOTE_START_HELP` | open help on start |
 | `MOTE_TRUECOLOR`, `MOTE_NO_TRUECOLOR` | terminal: force or forbid 24-bit color |
 | `MOTE_UTF8`, `MOTE_NO_UTF8` | terminal: force or forbid UTF-8 output |
-| `MOTE_FB` | fbdev: framebuffer device |
+| `MOTE_FB` | fbdev: framebuffer device; also lets it start outside a text console |
 | `MOTE_VT`, `MOTE_NO_VT` | Windows console: VT output on / off |
 | `MOTE_KEYTRACE` | DOS: log keys to `KEYTRACE.LOG` |
 | `MOTE_DUMP_FB`, `MOTE_DUMP_CELLS`, `MOTE_SHOT_ONCE` | screenshots for tests |
@@ -229,7 +229,7 @@ Environment variables:
 | `win32` | Windows window | yes | yes |
 | `winconsole` | Windows console | no | yes |
 | `console` | Linux, BSD, macOS terminal | no | paste via `wl-paste` / `xclip` |
-| `fbdev` | Linux framebuffer | no | no (internal) |
+| `fbdev` | Linux text console (Ctrl+Alt+F3), full screen | no | no (internal) |
 | `dos` | FreeDOS, DOSBox | no | no (internal) |
 
 The terminal port picks truecolor, 256 or 16 colors by itself and accepts

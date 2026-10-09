@@ -4,10 +4,10 @@ ROOT := ../..
 include ../build.mk
 
 include ../core.mk
-OV = main.c x11.c ../posix/os.c
+OV = main.c x11.c ../posix/os.c ../soft/soft.c
 SRC = $(CORE) $(OV)
 
-INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat
+INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat -I../soft
 X11_CFLAGS := $(shell pkg-config --cflags x11 2>/dev/null)
 X11_LIBS := $(shell pkg-config --libs x11 2>/dev/null)
 ifeq ($(X11_LIBS),)
@@ -20,7 +20,7 @@ LDFLAGS = $(X11_LIBS) $(MOTE_LD_OPT) $(MOTE_PLT)
 
 all: $(MOTE_BUILDDIR)/mote
 
-$(MOTE_BUILDDIR)/mote: $(SRC) $(CORE_H) | $(MOTE_BUILDDIR)
+$(MOTE_BUILDDIR)/mote: $(SRC) $(CORE_H) ../soft/soft.h | $(MOTE_BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 test:

@@ -4,7 +4,7 @@ ROOT := ../..
 include ../build.mk
 
 include ../core.mk
-OV = ../soft/main.c fbdev.c ../posix/os.c ../soft/soft.c
+OV = main.c fbdev.c ../posix/os.c ../soft/soft.c
 SRC = $(CORE) $(OV)
 
 INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat -I../soft

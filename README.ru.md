@@ -215,7 +215,7 @@ mote [-h] [-v] [-H] [-g WxH] [файл ...]
 | `MOTE_START_HELP` | открыть справку при запуске |
 | `MOTE_TRUECOLOR`, `MOTE_NO_TRUECOLOR` | терминал: включить или запретить 24-битный цвет |
 | `MOTE_UTF8`, `MOTE_NO_UTF8` | терминал: включить или запретить вывод UTF-8 |
-| `MOTE_FB` | fbdev: устройство фреймбуфера |
+| `MOTE_FB` | fbdev: устройство фреймбуфера; заодно разрешает запуск не из текстовой консоли |
 | `MOTE_VT`, `MOTE_NO_VT` | консоль Windows: VT-вывод вкл / выкл |
 | `MOTE_KEYTRACE` | DOS: писать клавиши в `KEYTRACE.LOG` |
 | `MOTE_DUMP_FB`, `MOTE_DUMP_CELLS`, `MOTE_SHOT_ONCE` | скриншоты для тестов |
@@ -231,7 +231,7 @@ mote [-h] [-v] [-H] [-g WxH] [файл ...]
 | `win32` | окно Windows | да | да |
 | `winconsole` | консоль Windows | нет | да |
 | `console` | терминал Linux, BSD, macOS | нет | вставка через `wl-paste` / `xclip` |
-| `fbdev` | фреймбуфер Linux | нет | нет (внутренний) |
+| `fbdev` | текстовая консоль Linux (Ctrl+Alt+F3), на весь экран | нет | нет (внутренний) |
 | `dos` | FreeDOS, DOSBox | нет | нет (внутренний) |
 
 Терминальный порт сам выбирает truecolor, 256 или 16 цветов и принимает

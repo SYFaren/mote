@@ -10,8 +10,9 @@ typedef struct {
   const char *no_plat;   /* error when plat_create fails */
   int min_w, min_h;      /* accepted -g range; max 0 = no upper bound */
   int max_w, max_h;
-  /* -g is in text cells: the config's win_w/win_h are GUI window pixels,
-     so they are neither passed to plat_create nor overwritten on exit. */
+  /* -g is not a GUI window size (text cells, or a framebuffer area): the
+     config's win_w/win_h are neither passed to plat_create nor overwritten
+     on exit. */
   mote_bool cell_geom;
   void (*after_first_draw)(Editor *e); /* may be NULL */
 } MoteApp;
