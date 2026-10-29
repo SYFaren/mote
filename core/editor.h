@@ -74,7 +74,7 @@ typedef struct {
   char find[192];
   char replace[192];
   char pending_path[1024];
-  mote_bool find_case, find_word, find_regex;
+  mote_bool find_case, find_word, find_regex, find_active;
   mote_bool wrap, show_ws;
   char qf_dir[1024];
   char qf_pool[QF_POOL][256];

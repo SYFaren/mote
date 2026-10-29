@@ -91,6 +91,8 @@ can be added later. See [`docs/BUILD.md`](docs/BUILD.md).
 
 - **Find** (`Ctrl+F`): plain text, case-insensitive by default;
   `Alt+C` match case, `Alt+W` whole word (both remembered).
+- All visible matches are highlighted; the current match is selected separately.
+- `Esc` clears search highlighting but keeps the query; `F3` resumes the search.
 - **Regex**: type `/pattern/`. Supports `.` `*` `+` `?`, `^` `$` (line start
   and end), `[...]` `[^...]` with ranges, `\d` `\w` `\s` and escapes. No groups
   or alternation.

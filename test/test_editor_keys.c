@@ -2,6 +2,7 @@
 #include "buffer.h"
 #include "common.h"
 #include "mote_snprintf.h"
+#include "theme.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +20,8 @@ static void expect(int cond, const char *msg) {
 
 struct Plat {
   int w, h, font_px;
+  char status_text[512];
+  int match_fills, selection_fills;
   char *clip;
   size_t clip_n;
   PlatEvent q[64];
@@ -61,13 +64,18 @@ int plat_font_h(Plat *p) {
 }
 void plat_set_font_px(Plat *p, int px) { p->font_px = px; }
 int plat_font_px(Plat *p) { return p->font_px; }
-void plat_begin_frame(Plat *p) { (void)p; }
+void plat_begin_frame(Plat *p) {
+  p->match_fills = p->selection_fills = 0;
+  memset(p->status_text, ' ', sizeof p->status_text - 1);
+  p->status_text[sizeof p->status_text - 1] = 0;
+}
 void plat_clear(Plat *p, mote_u32 rgb) {
   (void)p;
   (void)rgb;
 }
 void plat_fill_rect(Plat *p, int x, int y, int w, int h, mote_u32 rgb) {
-  (void)p;
+  if (rgb == theme_get(0)->match) p->match_fills++;
+  if (rgb == theme_get(0)->sel) p->selection_fills++;
   (void)x;
   (void)y;
   (void)w;
@@ -75,7 +83,11 @@ void plat_fill_rect(Plat *p, int x, int y, int w, int h, mote_u32 rgb) {
   (void)rgb;
 }
 void plat_draw_text(Plat *p, int x, int y, const char *s, int n, mote_u32 rgb) {
-  (void)p;
+  if (y == p->h - 1 && x >= 0 && x < (int)sizeof p->status_text - 1) {
+    int i;
+    for (i = 0; i < n && x + i < (int)sizeof p->status_text - 1; i++)
+      p->status_text[x + i] = s[i];
+  }
   (void)x;
   (void)y;
   (void)s;
@@ -173,6 +185,37 @@ int main(void) {
   p = plat_create("t", 80, 25);
   expect(p != NULL, "plat_create");
   expect(ed_init(&ed), "ed_init");
+  ed_draw(&ed, p);
+
+  push_text(p, "one one one");
+  drain(&ed, p);
+  mote_snprintf(ed.find, sizeof ed.find, "%s", "one");
+  push_key(p, PK_FINDNEXT, MOTE_FALSE, MOTE_FALSE);
+  drain(&ed, p);
+  expect(p->selection_fills == 3 && p->match_fills == 6,
+         "all search matches drawn, current match selected");
+  push_key(p, PK_FINDNEXT, MOTE_FALSE, MOTE_FALSE);
+  drain(&ed, p);
+  expect(p->selection_fills == 3 && p->match_fills == 6,
+         "next result remains distinct from other matches");
+  push_key(p, PK_ESCAPE, MOTE_FALSE, MOTE_FALSE);
+  drain(&ed, p);
+  expect(!ed.find_active && !strcmp(ed.find, "one"), "escape keeps search query");
+  expect(p->selection_fills == 0 && p->match_fills == 0,
+         "escape clears search highlights and found selection");
+  push_key(p, PK_FINDNEXT, MOTE_FALSE, MOTE_FALSE);
+  drain(&ed, p);
+  expect(ed.find_active && p->selection_fills == 3 && p->match_fills == 6,
+         "find next reactivates saved search");
+  push_key(p, PK_FIND, MOTE_TRUE, MOTE_FALSE);
+  drain(&ed, p);
+  expect(!strcmp(ed.prompt, "one"), "find prompt restores query");
+  push_key(p, PK_ESCAPE, MOTE_FALSE, MOTE_FALSE);
+  drain(&ed, p);
+  expect(ed.mode == MODE_EDIT && !ed.find_active && !strcmp(ed.find, "one"),
+         "escape closes search prompt and preserves query");
+  ed_free(&ed);
+  expect(ed_init(&ed), "ed_init after search drawing test");
   ed_draw(&ed, p);
 
   push_text(p, "int x = 42;\n");
@@ -358,6 +401,7 @@ int main(void) {
     drain(&ed, p);
     expect(ed.find_regex, "regex find mode");
     expect(ed.docs[ed.cur].match_b > ed.docs[ed.cur].match_a, "regex found digits");
+    expect(strstr(p->status_text, "/\\d+/") != NULL, "status shows active regex");
 
     push_key(p, PK_SELALL, MOTE_TRUE, MOTE_FALSE);
     drain(&ed, p);

@@ -824,6 +824,7 @@ static void find_not_found(Editor *e, Doc *d) {
 
 static void find_next(Editor *e, Doc *d) {
   size_t len, start, wrap_end, i, mlen;
+  e->find_active = e->find[0] != 0;
   if (!find_ready(e, d)) return;
   len = buf_len(&d->buf);
   start = d->caret < len ? ed_next(d, d->caret) : len;
@@ -838,6 +839,7 @@ static void find_next(Editor *e, Doc *d) {
 
 static void find_prev(Editor *e, Doc *d) {
   size_t lim, i, mlen;
+  e->find_active = e->find[0] != 0;
   if (!find_ready(e, d)) return;
   lim = has_sel(d) ? sel_lo(d) : d->caret;
   if (scan_match(e, d, 0, lim, MOTE_TRUE, &i, &mlen))
@@ -1709,6 +1711,12 @@ static void prompt_enter(Editor *e, Doc *d) {
 static void handle_prompt(Editor *e, Doc *d, const PlatEvent *ev) {
   if (ev->type == PE_KEY) {
     if (ev->key == PK_ESCAPE) {
+      if (e->mode == MODE_FIND) {
+        e->find_active = MOTE_FALSE;
+        if (has_sel(d) && sel_lo(d) == d->match_a && sel_hi(d) == d->match_b)
+          clear_sel(d);
+        d->match_a = d->match_b = 0;
+      }
       drop_pending(e);
       leave_mode(e);
     } else if (ev->key == PK_ENTER) {
@@ -1875,6 +1883,15 @@ static void handle_edit_key(Editor *e, Doc *d, Plat *p, const PlatEvent *ev) {
   mote_bool keep = ev->shift;
   int page = e->rows > 1 ? e->rows - 1 : 1;
   switch (ev->key) {
+  case PK_ESCAPE:
+    if (e->find_active) {
+      e->find_active = MOTE_FALSE;
+      if (has_sel(d) && sel_lo(d) == d->match_a && sel_hi(d) == d->match_b)
+        clear_sel(d);
+      d->match_a = d->match_b = 0;
+      set_status(e, "search off");
+    }
+    break;
   case PK_LEFT:
     move_caret(e, d, ev->ctrl ? prev_word(d, d->caret) : ed_prev(d, d->caret), keep);
     break;
@@ -2056,7 +2073,7 @@ static void draw_help_item(Plat *p, const Theme *t, const HelpItem *it, int x, i
 static void draw_range(Editor *e, Doc *d, Plat *p, size_t a, size_t b, int y,
                        size_t col0, size_t col_max, const HlSpan *spans,
                        int nspans, const Theme *t) {
-  size_t i, col = 0;
+  size_t i, col = 0, match_end = 0;
   size_t slo = sel_lo(d), shi = sel_hi(d);
   mote_bool selecting = has_sel(d);
   int gx = e->gutter;
@@ -2077,6 +2094,11 @@ static void draw_range(Editor *e, Doc *d, Plat *p, size_t a, size_t b, int y,
       cp = '?';
     }
     if (cp == '\t') wcols = tab_cols(col);
+    if (e->find_active && e->find[0]) {
+      size_t match_len;
+      if (match_at(e, d, i, &match_len) && i + match_len > match_end)
+        match_end = i + match_len;
+    }
     if (col + (size_t)wcols > col0 && col < col_max) {
       int x = gx + (int)(col - col0) * e->cw;
       int fill_w = wcols;
@@ -2086,7 +2108,7 @@ static void draw_range(Editor *e, Doc *d, Plat *p, size_t a, size_t b, int y,
       }
       if (selecting && i >= slo && i < shi)
         plat_fill_rect(p, x, y, e->cw * fill_w, e->ch, t->sel);
-      else if (d->match_b > d->match_a && i >= d->match_a && i < d->match_b)
+      else if (i < match_end)
         plat_fill_rect(p, x, y, e->cw * fill_w, e->ch, t->match);
       hk = hl_kind_at(spans, nspans, off);
       if (i == d->bracket_a || i == d->bracket_b) hk = HL_BRACKET;
@@ -2260,6 +2282,9 @@ static void draw_status(Editor *e, Doc *d, Plat *p, const Theme *t,
     mote_snprintf(bar, sizeof bar, "%s%s%s", pfx, e->prompt[0] ? " " : "", e->prompt);
   else if (e->mode == MODE_QUITASK || e->mode == MODE_OPENASK || e->mode == MODE_CLOSEASK)
     mote_snprintf(bar, sizeof bar, "%s", e->status);
+  else if (e->find_active && e->find[0])
+    mote_snprintf(bar, sizeof bar, "Find: %s%s%s  %s", e->find_regex ? "/" : "",
+                  e->find, e->find_regex ? "/" : "", e->status);
   else
     mote_snprintf(bar, sizeof bar, "[%d/%d] %s%s%s  %lu:%lu  %s  %s  %s", e->cur + 1,
                   e->ndocs, path_base(d->path[0] ? d->path : "[untitled]"),
