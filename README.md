@@ -1,8 +1,8 @@
 # mote
 
 Tiny text editor with an **ANSI C89 core** and compile-time platform overlays.
-Current maintained builds are the POSIX terminal (verified on Linux) and Windows console; the
-overlay design can support additional backends.
+Current maintained builds are the POSIX terminal (verified on Linux) and
+Windows console; the overlay design can support additional backends.
 
 [Русская версия](README.ru.md)
 

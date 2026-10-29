@@ -5,8 +5,8 @@
 
 #define MOTE_NAME "mote"
 #define MOTE_AUTHOR "SYFaren"
-#define MOTE_VERSION "2.1.2"
-#define MOTE_BUILD "2026-10-09"
+#define MOTE_VERSION "3.0.0"
+#define MOTE_BUILD "2026-10-29"
 #define MOTE_FONT_PX 15 /* retained platform setting; console terminals own fonts */
 #define MOTE_FONT_MIN 8
 #define MOTE_FONT_MAX 48

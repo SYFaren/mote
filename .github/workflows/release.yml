@@ -24,6 +24,8 @@ jobs:
       - name: Prepare release assets
         run: |
           make release
+      - name: Prepare release notes
+        run: cp docs/releases/${GITHUB_REF_NAME}.md /tmp/release-notes.md
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -34,3 +36,4 @@ jobs:
             dist-release/mote-posix-console
             dist-release/mote-windows-console.exe
             dist-release/SHA256SUMS
+          body_path: /tmp/release-notes.md
