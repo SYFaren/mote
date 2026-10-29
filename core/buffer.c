@@ -283,24 +283,9 @@ mote_bool buf_save(const Buf *b, const char *path) {
   size_t len, i, n;
   if (!path || !path[0] || !b->data) return MOTE_FALSE;
   len = buf_len(b);
-  /* 8.3 names allow one dot, so DOS gets a fixed temp name in the same folder. */
-#if defined(__DJGPP__) || defined(__MSDOS__) || defined(MSDOS)
-  {
-    const char *slash = strrchr(path, '/');
-    const char *bslash = strrchr(path, '\\');
-    const char *dirend = path;
-    size_t dlen;
-    if (bslash && (!slash || bslash > slash)) slash = bslash;
-    if (slash) dirend = slash + 1;
-    dlen = (size_t)(dirend - path);
-    if (dlen + 12 >= sizeof tmp) return MOTE_FALSE;
-    if (dlen) memcpy(tmp, path, dlen);
-    mote_snprintf(tmp + dlen, sizeof tmp - dlen, "MT$$$$$.TMP");
-  }
-#else
+  /* Use a sibling temp file so rename stays on the same filesystem. */
   if (mote_snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp)
     return MOTE_FALSE;
-#endif
   f = plat_fopen(tmp, "wb");
   if (!f) return MOTE_FALSE;
   for (i = 0; i < len; i += n) {
@@ -324,18 +309,11 @@ mote_bool buf_save(const Buf *b, const char *path) {
     plat_remove(tmp);
     return MOTE_FALSE;
   }
-#if defined(__DJGPP__) || defined(__MSDOS__) || defined(MSDOS)
-  /* FAT rename does not replace an existing name. Once the original is
-     gone the temp file is the only copy, so it is kept if rename fails. */
-  (void)plat_remove(path);
-  return plat_rename(tmp, path) == 0;
-#else
   if (plat_rename(tmp, path) != 0) {
     plat_remove(tmp);
     return MOTE_FALSE;
   }
   return MOTE_TRUE;
-#endif
 }
 
 void buf_seek(Buf *b, size_t pos) {

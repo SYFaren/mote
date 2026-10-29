@@ -1,30 +1,18 @@
 # mote overlays
 
-One **ANSI C89 core** (`../../core`) + one overlay at link time.
+The editor core is shared and compiled with one platform overlay at link time.
+The currently maintained overlays are:
 
 | Overlay | Target | Output | Build |
-|---------|--------|--------|-------|
-| `console/` | Linux / *BSD / macOS TTY | truecolor cells → stdout | `make console` |
-| `x11/` | Linux GUI | X11 window | `make` / `make x11` |
-| `wayland/` | Linux GUI | Wayland xdg-shell + wl_shm | `make wayland` |
-| `sdl/` | Cross GUI | SDL2 (or SDL3 with `MOTE_SDL3=1`) | `make sdl` / `make sdl3` |
-| `fbdev/` | Linux KMS-less | `/dev/fb0` software FB | `make fbdev` |
-| `win32/` | Windows GUI | GDI window | `make win32` |
-| `winconsole/` | Windows console | ConHost cells | `make winconsole` |
-| `dos/` | FreeDOS / DOSBox | VGA text (DJGPP) | `make dos` |
-| `wasm/` | Browser | Emscripten + SDL2 | `make wasm` (needs emsdk) |
-| `soft/` | shared | RGB FB + bitmap font + GUI `main` | (linked in) |
-| `posix/os.c` | Unix FS | fopen / config path | console, x11, wayland, sdl, fbdev, wasm |
-| `win32/os.c` | Win FS | UTF-16 / `%APPDATA%` | win32, winconsole |
+|---|---|---|---|
+| `console/` | POSIX TTY (Linux tested) | terminal cells | `make posix` / `make console` |
+| `winconsole/` | Windows console | Windows console cells | `make windows` / `make winconsole` |
 
-Shared squeeze flags: [`build.mk`](build.mk).
+Each console overlay supplies its filesystem/config hooks. `winconsole/` also
+contains the UTF-8 path and native-key helpers needed by its Windows console
+backend; no Windows GUI overlay is maintained.
 
-## Release layout (`make release`)
-
-```text
-dist-release/
-  by-platform/<os>/<arch>/<backend>/
-  flat/                     # GitHub asset names
-  mote-all-platforms.zip
-  SHA256SUMS
-```
+`core.mk` lists the shared core sources. `evq.h` contains the event-queue helper
+used by console overlays. `plat/platform.h` defines the contract every overlay
+implements. The current maintainer focus is POSIX and Windows console; the
+overlay boundary remains available for adding other backends later.

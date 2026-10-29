@@ -1,9 +1,8 @@
 # mote
 
-Tiny multi-platform text editor: an **ANSI C89 core** plus one compile-time
-**overlay** per platform. The same editor runs as an X11, Wayland, SDL or Win32
-window, in a terminal, in the Windows console, on the Linux framebuffer, under
-DOS and in the browser.
+Tiny text editor with an **ANSI C89 core** and compile-time platform overlays.
+Current maintained builds are the POSIX terminal (verified on Linux) and Windows console; the
+overlay design can support additional backends.
 
 [Русская версия](README.ru.md)
 
@@ -17,14 +16,14 @@ DOS and in the browser.
 ## Quick start
 
 ```sh
-make                 # Linux X11
-make console         # Unix terminal
+make                 # POSIX terminal
+make windows         # Windows console (MinGW-w64)
 make test && make smoke
-sh scripts/install-local.sh   # install the terminal build as ~/.local/bin/mote
 ```
 
-Other ports: `make wayland`, `make sdl`, `make sdl3`, `make fbdev`, `make win32`,
-`make winconsole`, `make dos`, `make wasm`. See [`docs/BUILD.md`](docs/BUILD.md).
+The maintained builds are POSIX terminal (`make posix`) and Windows console
+(`make windows`). The shared core uses platform overlays, so additional backends
+can be added later. See [`docs/BUILD.md`](docs/BUILD.md).
 
 ## Features
 
@@ -54,7 +53,7 @@ Other ports: `make wayland`, `make sdl`, `make sdl3`, `make fbdev`, `make win32`
 - **CP1251** (Windows Cyrillic) files are detected and converted to UTF-8.
 - **LF / CRLF** detected on load and kept on save; a lone CR becomes LF.
   `Alt+E` toggles the line ending.
-- File size limit: 64 MB (2 MB on DOS).
+- File size limit: 64 MB.
 
 ### Editing
 
@@ -87,8 +86,6 @@ Other ports: `make wayland`, `make sdl`, `make sdl3`, `make fbdev`, `make win32`
 - `Ctrl+Left` / `Ctrl+Right` move by words.
 - Up / Down keep the column, also across wrapped lines.
 - **Go to line** (`Ctrl+G`).
-- **Mouse** in window ports: click places the caret, Shift+click and drag
-  select, the wheel scrolls.
 
 ### Find and replace
 
@@ -114,7 +111,7 @@ Other ports: `make wayland`, `make sdl`, `make sdl3`, `make fbdev`, `make win32`
   modified, `RO`, line:column, LF/CRLF, language and the last message.
 - **Word wrap** (`Ctrl+W`), visual only; without it the view scrolls
   horizontally.
-- **Show whitespace** (`F7`): `·` and `»` in windows, `.` and `>` in text mode.
+- **Show whitespace** (`F7`): `.` and `>` depending on the terminal.
 - **Themes** (`Ctrl+T`): dark, light, slate.
 - **Zoom** (`Ctrl+=` / `Ctrl+-` / `Ctrl+0`), 8–48 px, default 15. In text-mode
   ports the terminal owns the font.
@@ -192,61 +189,48 @@ mote [-h] [-v] [-H] [-g WxH] [file ...]
   -h, --help         show help
   -v, --version      print version
   -H, --start-help   open the key help on start
-  -g, --geometry     window size in pixels (min 200x120),
-                     or COLSxROWS in text-mode ports
+  -g, --geometry     COLSxROWS (40..300 x 10..120)
   file ...           open up to 6 files
 ```
 
-Saved on exit: window size, theme, font size, word wrap, whitespace, find
+Saved on exit: theme, font size, word wrap, whitespace, find
 options and recent files.
 
 | System | Config file |
 |---|---|
-| Linux, BSD, macOS | `~/.config/mote/config` (or `$XDG_CONFIG_HOME/mote/config`) |
+| Linux | `~/.config/mote/config` (or `$XDG_CONFIG_HOME/mote/config`) |
 | Windows | `%APPDATA%\mote\config` |
-| DOS | `MOTE\CONFIG` |
 
 Environment variables:
 
 | Variable | Effect |
 |---|---|
 | `MOTE_START_HELP` | open help on start |
-| `MOTE_TRUECOLOR`, `MOTE_NO_TRUECOLOR` | terminal: force or forbid 24-bit color |
-| `MOTE_UTF8`, `MOTE_NO_UTF8` | terminal: force or forbid UTF-8 output |
-| `MOTE_FB` | fbdev: framebuffer device; also lets it start outside a text console |
+| `MOTE_TRUECOLOR`, `MOTE_NO_TRUECOLOR` | POSIX terminal: force or forbid 24-bit color |
+| `MOTE_UTF8`, `MOTE_NO_UTF8` | POSIX terminal: force or forbid UTF-8 output |
 | `MOTE_VT`, `MOTE_NO_VT` | Windows console: VT output on / off |
-| `MOTE_KEYTRACE` | DOS: log keys to `KEYTRACE.LOG` |
-| `MOTE_DUMP_FB`, `MOTE_DUMP_CELLS`, `MOTE_SHOT_ONCE` | screenshots for tests |
+| `MOTE_DUMP_CELLS`, `MOTE_SHOT_ONCE` | Windows console cell-grid screenshots for tests |
 
 ## Platforms
 
 | Port | Runs on | Mouse | System clipboard |
 |---|---|---|---|
-| `x11` | Linux, BSD | yes | yes |
-| `wayland` | Linux | yes | no (internal) |
-| `sdl` / `sdl3` | Linux, BSD, macOS | yes | yes |
-| `wasm` | browser | yes | yes |
-| `win32` | Windows window | yes | yes |
+| `console` | POSIX terminal (Linux tested) | no | paste via `wl-paste` / `xclip` |
 | `winconsole` | Windows console | no | yes |
-| `console` | Linux, BSD, macOS terminal | no | paste via `wl-paste` / `xclip` |
-| `fbdev` | Linux text console (Ctrl+Alt+F3), full screen | no | no (internal) |
-| `dos` | FreeDOS, DOSBox | no | no (internal) |
 
-The terminal port picks truecolor, 256 or 16 colors by itself and accepts
-bracketed paste. Shortcuts also work on non-Latin keyboard layouts.
-
-Release builds: Linux amd64 / arm64 / armhf / i686 / riscv64 (incl. static
-musl), FreeBSD, OpenBSD, macOS amd64 / arm64, Windows amd64 / i686, DOS and the
-web.
+The POSIX terminal port picks truecolor, 256 or 16 colors by itself and accepts
+bracketed paste. Shortcuts also work on non-Latin keyboard layouts. The current
+maintainer build/release focus is POSIX and Windows console; the shared core and
+overlay design remain suitable for additional backends.
 
 ## Layout and release
 
 ```text
-core/       buffer, editor, keymap, utf8, undo, hl, regex, theme, config
-plat/       platform.h
-overlay/    x11 · wayland · sdl · fbdev · console · win32 · winconsole · dos · wasm
-docs/       BUILD.md
-scripts/    smoke, release, publish and install helpers
+core/       editor, buffer, keymap, utf8, undo, syntax, regex, config
+plat/       platform.h (overlay contract)
+overlay/    console (POSIX) · winconsole (Windows)
+docs/       build and release guidance
+test/       unit, editor-key, terminal-decoder and smoke checks
 ```
 
 `core/` must stay C89 (`make ansi-check`); each overlay adds a platform layer.
@@ -254,5 +238,4 @@ See [`overlay/README.md`](overlay/README.md).
 
 ```sh
 make release
-sh scripts/publish-github.sh
 ```

@@ -1,33 +1,33 @@
 WINCC ?= x86_64-w64-mingw32-gcc
-UPX_BIN ?= $(HOME)/.local/opt/upx/upx
 ROOT := ../..
-include ../build.mk
+MOTE_BUILDDIR ?= build
 
 include ../core.mk
-OV = main.c winconsole.c ../win32/os.c ../win32/winutil.c
+OV = main.c winconsole.c os.c winutil.c
 SRC = $(CORE) $(OV)
 
-INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat -I$(ROOT)/overlay/win32
-CFLAGS = -std=c99 -Wall -Wextra $(INCLUDES) $(MOTE_OPT) -D_WIN32 -municode
+INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat
+CFLAGS = -std=c99 -Wall -Wextra $(INCLUDES) -Oz -DNDEBUG \
+	-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables \
+	-fno-unwind-tables -fno-ident -fomit-frame-pointer -fno-stack-protector \
+	-fmerge-all-constants -flto -fno-math-errno -fno-semantic-interposition \
+	-fvisibility=hidden -fno-common -D_WIN32 -municode
 LDFLAGS = -static -static-libgcc -Oz -flto \
 	-Wl,--gc-sections,--as-needed,-s,--strip-all,--exclude-libs,ALL \
 	-luser32 -lkernel32
 
-.PHONY: all clean pack
+.PHONY: all clean test
 
-all: build/mote.exe
+all: $(MOTE_BUILDDIR)/mote.exe
 
-build/mote.exe: $(SRC) $(CORE_H) | build
+$(MOTE_BUILDDIR)/mote.exe: $(SRC) $(CORE_H) | $(MOTE_BUILDDIR)
 	$(WINCC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
-pack: build/mote.exe
-	@command -v $(UPX_BIN) >/dev/null 2>&1 || { echo "UPX missing: $(UPX_BIN)"; exit 1; }
-	cp -f build/mote.exe build/mote.packed.exe
-	env -u UPX $(UPX_BIN) --best --lzma -f build/mote.packed.exe
-	ls -la build/mote.exe build/mote.packed.exe
+test:
+	$(MAKE) -C $(ROOT) test
 
-build:
-	mkdir -p build
+$(MOTE_BUILDDIR):
+	mkdir -p $(MOTE_BUILDDIR)
 
 clean:
-	rm -rf build
+	rm -rf $(MOTE_BUILDDIR)

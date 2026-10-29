@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Only fputs here: pulling in printf or sscanf bloats the DOS build. */
+/* Only fputs here: avoid pulling heavier formatting into constrained builds. */
 static void usage(const MoteApp *app) {
   char line[96];
   fputs("usage: " MOTE_NAME " [-h|-v|-H|-g WxH] [file ...]\n"
@@ -86,7 +86,7 @@ static void editor_to_cfg(const Editor *e, MoteCfg *cfg) {
 }
 
 int mote_main(int argc, char **argv, const MoteApp *app) {
-  static Editor ed; /* about 100 KB, too much for the wasm and DOS stacks */
+  static Editor ed; /* keep the large editor state off the process stack */
   Plat *plat;
   MoteCfg cfg;
   const char *files[MAX_DOCS];

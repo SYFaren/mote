@@ -1,9 +1,8 @@
 # mote
 
-Маленький многоплатформенный текстовый редактор: **ядро на ANSI C89** и по
-одному **оверлею** на платформу, выбираемому при сборке. Один и тот же редактор
-работает окном X11, Wayland, SDL или Win32, в терминале, в консоли Windows, на
-фреймбуфере Linux, под DOS и в браузере.
+Небольшой текстовый редактор с **ядром на ANSI C89** и подключаемыми при сборке
+платформенными оверлеями. Сейчас поддерживаются терминал Linux и консоль
+Windows; архитектура оверлеев позволяет добавлять другие порты.
 
 [English version](README.md)
 
@@ -17,15 +16,14 @@
 ## Быстрый старт
 
 ```sh
-make                 # Linux X11
-make console         # терминал Unix
+make                 # POSIX-терминал
+make windows         # консоль Windows (MinGW-w64)
 make test && make smoke
-sh scripts/install-local.sh   # поставить терминальную версию в ~/.local/bin/mote
 ```
 
-Другие порты: `make wayland`, `make sdl`, `make sdl3`, `make fbdev`,
-`make win32`, `make winconsole`, `make dos`, `make wasm`. Подробнее в
-[`docs/BUILD.md`](docs/BUILD.md).
+Поддерживаемые сборки: POSIX-терминал (`make posix`) и консоль Windows
+(`make windows`). Общее ядро использует оверлеи платформ, поэтому позже можно
+добавить другие порты. Подробнее в [`docs/BUILD.md`](docs/BUILD.md).
 
 ## Возможности
 
@@ -55,7 +53,7 @@ sh scripts/install-local.sh   # поставить терминальную ве
 - Файлы в **CP1251** (кириллица Windows) распознаются и переводятся в UTF-8.
 - **LF / CRLF** определяются при открытии и сохраняются как были; одиночный CR
   становится LF. `Alt+E` переключает конец строки.
-- Предел размера файла: 64 МБ (в DOS 2 МБ).
+- Предел размера файла: 64 МБ.
 
 ### Редактирование
 
@@ -87,8 +85,6 @@ sh scripts/install-local.sh   # поставить терминальную ве
 - `Ctrl+←` / `Ctrl+→` — по словам.
 - Вверх / вниз курсор помнит колонку, в том числе при переносе строк.
 - **Переход к строке** (`Ctrl+G`).
-- **Мышь** в оконных версиях: клик ставит курсор, Shift+клик и перетаскивание
-  выделяют, колесо прокручивает.
 
 ### Поиск и замена
 
@@ -115,7 +111,7 @@ sh scripts/install-local.sh   # поставить терминальную ве
   изменён, `RO`, строка:колонка, LF/CRLF, язык и последнее сообщение.
 - **Перенос строк** (`Ctrl+W`), только визуальный; без него вид прокручивается
   по горизонтали.
-- **Показ пробелов** (`F7`): `·` и `»` в окнах, `.` и `>` в текстовом режиме.
+- **Показ пробелов** (`F7`): `.` и `>` в зависимости от терминала.
 - **Темы** (`Ctrl+T`): dark, light, slate.
 - **Масштаб** (`Ctrl+=` / `Ctrl+-` / `Ctrl+0`), 8–48 px, по умолчанию 15. В
   текстовых портах шрифтом управляет терминал.
@@ -194,61 +190,48 @@ mote [-h] [-v] [-H] [-g WxH] [файл ...]
   -h, --help         справка
   -v, --version      версия
   -H, --start-help   открыть справку по клавишам при запуске
-  -g, --geometry     размер окна в пикселях (минимум 200x120)
-                     или COLSxROWS в текстовых портах
+  -g, --geometry     COLSxROWS (40..300 x 10..120)
   файл ...           открыть до 6 файлов
 ```
 
-При выходе сохраняются: размер окна, тема, размер шрифта, перенос, показ
+При выходе сохраняются: тема, размер шрифта, перенос, показ
 пробелов, параметры поиска и недавние файлы.
 
 | Система | Файл настроек |
 |---|---|
-| Linux, BSD, macOS | `~/.config/mote/config` (или `$XDG_CONFIG_HOME/mote/config`) |
+| Linux | `~/.config/mote/config` (или `$XDG_CONFIG_HOME/mote/config`) |
 | Windows | `%APPDATA%\mote\config` |
-| DOS | `MOTE\CONFIG` |
 
 Переменные окружения:
 
 | Переменная | Действие |
 |---|---|
 | `MOTE_START_HELP` | открыть справку при запуске |
-| `MOTE_TRUECOLOR`, `MOTE_NO_TRUECOLOR` | терминал: включить или запретить 24-битный цвет |
-| `MOTE_UTF8`, `MOTE_NO_UTF8` | терминал: включить или запретить вывод UTF-8 |
-| `MOTE_FB` | fbdev: устройство фреймбуфера; заодно разрешает запуск не из текстовой консоли |
+| `MOTE_TRUECOLOR`, `MOTE_NO_TRUECOLOR` | терминал Linux: включить или запретить 24-битный цвет |
+| `MOTE_UTF8`, `MOTE_NO_UTF8` | терминал Linux: включить или запретить вывод UTF-8 |
 | `MOTE_VT`, `MOTE_NO_VT` | консоль Windows: VT-вывод вкл / выкл |
-| `MOTE_KEYTRACE` | DOS: писать клавиши в `KEYTRACE.LOG` |
-| `MOTE_DUMP_FB`, `MOTE_DUMP_CELLS`, `MOTE_SHOT_ONCE` | скриншоты для тестов |
+| `MOTE_DUMP_CELLS`, `MOTE_SHOT_ONCE` | снимки сетки консоли Windows для тестов |
 
 ## Платформы
 
 | Порт | Где работает | Мышь | Системный буфер обмена |
 |---|---|---|---|
-| `x11` | Linux, BSD | да | да |
-| `wayland` | Linux | да | нет (внутренний) |
-| `sdl` / `sdl3` | Linux, BSD, macOS | да | да |
-| `wasm` | браузер | да | да |
-| `win32` | окно Windows | да | да |
+| `console` | POSIX-терминал (проверен Linux) | нет | вставка через `wl-paste` / `xclip` |
 | `winconsole` | консоль Windows | нет | да |
-| `console` | терминал Linux, BSD, macOS | нет | вставка через `wl-paste` / `xclip` |
-| `fbdev` | текстовая консоль Linux (Ctrl+Alt+F3), на весь экран | нет | нет (внутренний) |
-| `dos` | FreeDOS, DOSBox | нет | нет (внутренний) |
 
-Терминальный порт сам выбирает truecolor, 256 или 16 цветов и принимает
-bracketed paste. Горячие клавиши работают и на русской раскладке.
-
-Релизные сборки: Linux amd64 / arm64 / armhf / i686 / riscv64 (включая
-статические musl), FreeBSD, OpenBSD, macOS amd64 / arm64, Windows amd64 / i686,
-DOS и веб.
+POSIX-терминал сам выбирает truecolor, 256 или 16 цветов и принимает bracketed
+paste. Горячие клавиши работают и на русской раскладке. Текущий фокус разработки
+и релизов — POSIX и Windows console; архитектура ядра с оверлеями остаётся
+расширяемой для будущих портов.
 
 ## Структура и релизы
 
 ```text
-core/       buffer, editor, keymap, utf8, undo, hl, regex, theme, config
-plat/       platform.h
-overlay/    x11 · wayland · sdl · fbdev · console · win32 · winconsole · dos · wasm
-docs/       BUILD.md
-scripts/    smoke, release, publish and install helpers
+core/       editor, buffer, keymap, utf8, undo, подсветка, regex, config
+plat/       platform.h (контракт оверлеев)
+overlay/    console (POSIX) · winconsole (Windows)
+docs/       инструкции сборки и релиза
+test/       модульные тесты, клавиши, терминальный ввод и smoke-проверки
 ```
 
 `core/` обязан оставаться на C89 (`make ansi-check`); каждый оверлей добавляет
@@ -256,5 +239,4 @@ scripts/    smoke, release, publish and install helpers
 
 ```sh
 make release
-sh scripts/publish-github.sh
 ```

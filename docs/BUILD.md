@@ -1,65 +1,49 @@
 # Build
 
-## Overlays
+The active development targets are the POSIX terminal and Windows console. The
+shared core and `Plat` interface remain overlay-based so another backend can be
+added later without redesigning the editor core.
 
-| Target | Command | Deps |
-|--------|---------|------|
-| Linux X11 | `make x11` | `libx11-dev` |
-| Linux Wayland | `make wayland` | `libwayland-dev`, `libxkbcommon-dev`, `wayland-protocols` |
-| Linux SDL2 | `make sdl` | `libsdl2-dev` |
-| Linux SDL3 | `make sdl3` | `pkg-config sdl3` |
-| Linux fbdev | `make fbdev` | `/dev/fb0` |
-| Unix console | `make console` | TTY |
-| Windows GUI | `make win32` | MinGW |
-| Windows console | `make winconsole` | MinGW |
-| DOS | `make dos` | DJGPP ([build-djgpp](https://github.com/andrewwutw/build-djgpp/releases)) on `PATH` |
-| WebAssembly | `make wasm` | emscripten (`source ~/.local/opt/emsdk/emsdk_env.sh`) |
+## Requirements
 
-Quality gate: `make ansi-check && make test && make smoke`
+| Target | Command | Requirements |
+|---|---|---|
+| POSIX terminal (Linux tested) | `make posix` (or `make console`) | C compiler, GNU make, TTY to run |
+| Windows console | `make windows` (or `make winconsole`) | MinGW-w64, default compiler `x86_64-w64-mingw32-gcc` |
 
-## Release
+Override compiler commands when needed:
 
 ```sh
-make release              # everything this host can build
-make release-linux        # linux amd64 backends
-make release-cross-linux  # linux glibc cross (arm/i686/riscv64 + windows i686)
-make release-musl-linux   # linux musl static console (all arches)
-make release-bsd          # on FreeBSD / OpenBSD / NetBSD only
-make release-macos        # on macOS only
-make verify-release       # smoke-test dist-release/flat
+make posix CC=cc
+make windows WINCC=x86_64-w64-mingw32-gcc
 ```
 
-Output:
+## Tests
+
+```sh
+make ansi-check   # shared core must compile as ANSI C89
+make test         # core/editor tests and terminal escape decoding
+make smoke        # checks the two active builds (Windows/Wine optional)
+```
+
+The terminal escape test uses a pseudo-terminal; `make test` may report it
+skipped if the host has no `script` utility or cannot allocate a TTY.
+
+## Release build
+
+```sh
+make release
+```
+
+This builds and tests the POSIX terminal and Windows console release artifacts
+(the POSIX build is currently verified on Linux):
 
 ```text
-dist-release/
-  by-platform/<os>/<arch>/<backend>/mote[.upx]
-  flat/mote-<os>-<arch>-<backend>   # GitHub asset names
-  flat/mote-linux-console …         # legacy linux amd64 aliases
-  mote-all-platforms.zip
-  SHA256SUMS
+dist-release/mote-posix-console
+dist-release/mote-windows-console.exe
 ```
 
-Single port: `sh scripts/build-port.sh <os> <arch> <backend>`
-
-| OS | arch | backends in release |
-|----|------|---------------------|
-| linux | amd64 | console, x11, sdl2, wayland, fbdev | glibc |
-| linux | amd64 | console, fbdev | **musl** (static) |
-| linux | arm64, armhf, i686 | console, x11, sdl2 | glibc cross |
-| linux | arm64, armhf, i686, riscv64 | console | **musl** static cross (Bootlin in CI, musl.cc locally) |
-| linux | riscv64 | console, x11, sdl2 | glibc cross (x11/sdl if multiarch libs present) |
-| macos | amd64, arm64 | console, sdl2 |
-| freebsd | amd64, arm64 | console, x11, sdl2 |
-| openbsd | amd64 | console, x11, sdl2 |
-| windows | amd64, i686 | gui, winconsole |
-| dos | i686 | dos |
-| web | — | wasm |
-
-GitHub Actions (`.github/workflows/release.yml`): Linux + cross on `ubuntu-latest`, macOS on `macos-14`, FreeBSD/OpenBSD via `vmactions/*-vm`, merged into one zip on tag push.
-
-Cross on Debian: `gcc-aarch64-linux-gnu`, `gcc-arm-linux-gnueabihf`, `gcc-i686-linux-gnu`, `gcc-riscv64-linux-gnu`, `gcc-mingw-w64-i686`.
-
-Publish: `make release && sh scripts/publish-github.sh` (notes in `docs/releases/<tag>.md`).
-
-UPX: set `UPX_BIN` (default `~/.local/opt/upx/upx`).
+Tagged GitHub releases are built by `.github/workflows/release.yml`. The release
+workflow publishes these binaries and `SHA256SUMS`. This is the current
+maintainer target set, not a restriction on the overlay architecture; future
+overlays can be added as separate targets and CI jobs.

@@ -11,7 +11,6 @@
 #include <string.h>
 #include <io.h>
 #include <fcntl.h>
-#include <direct.h>
 
 FILE *plat_fopen(const char *path, const char *mode) {
   wchar_t *wp, wm[8];
@@ -52,26 +51,40 @@ int plat_rename(const char *from, const char *to) {
 }
 
 void plat_fsync_file(FILE *f) {
-  int fd;
   if (!f) return;
   fflush(f);
-  fd = _fileno(f);
-  if (fd >= 0) (void)_commit(fd);
+  _commit(_fileno(f));
 }
 
-/* %APPDATA%\mote\config. APPDATA is read as UTF-16: the ANSI value cannot
-   hold a Cyrillic user name on a non-Cyrillic system locale. */
 int plat_config_path(char *out, size_t n) {
-  const wchar_t *home = _wgetenv(L"APPDATA");
-  char *dir;
-  wchar_t *wdir;
-  int r = -1;
-  if (!home || !home[0] || !(dir = win_utf8(home))) return -1;
-  if (mote_snprintf(out, n, "%s\\%s", dir, MOTE_NAME) < (int)n && (wdir = win_wide(out))) {
-    _wmkdir(wdir);
-    free(wdir);
-    if (mote_snprintf(out, n, "%s\\%s\\config", dir, MOTE_NAME) < (int)n) r = 0;
+  wchar_t *appdata = NULL;
+  char *utf8 = NULL;
+  char dir[1024];
+  int len;
+  (void)n;
+  len = GetEnvironmentVariableW(L"APPDATA", NULL, 0);
+  if (len <= 1) return -1;
+  appdata = (wchar_t *)malloc((size_t)len * sizeof(wchar_t));
+  if (!appdata) return -1;
+  if (!GetEnvironmentVariableW(L"APPDATA", appdata, (DWORD)len)) {
+    free(appdata);
+    return -1;
   }
-  free(dir);
-  return r;
+  utf8 = win_utf8(appdata);
+  free(appdata);
+  if (!utf8) return -1;
+  if (mote_snprintf(dir, sizeof dir, "%s\\%s", utf8, MOTE_NAME) >= (int)sizeof dir) {
+    free(utf8);
+    return -1;
+  }
+  free(utf8);
+  {
+    wchar_t *wdir = win_wide(dir);
+    if (wdir) {
+      CreateDirectoryW(wdir, NULL);
+      free(wdir);
+    }
+  }
+  if (mote_snprintf(out, n, "%s\\config", dir) >= (int)n) return -1;
+  return 0;
 }

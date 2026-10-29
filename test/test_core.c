@@ -91,7 +91,7 @@ int main(void) {
   CHECK(undo_push(&u, U_INSERT, 2, "!", 1, MOTE_FALSE));
   CHECK(u.head == 2);
 
-  /* DOS turns .c into .C and it must still be C */
+  /* File extension matching is case-insensitive. */
   syn = hl_select("hello.c");
   CHECK(syn != NULL && strcmp(hl_lang_name(syn), "c/c++") == 0);
   syn = hl_select("HELLO.C");

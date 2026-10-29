@@ -5,205 +5,32 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: write
 
 jobs:
-  linux:
+  release:
     runs-on: ubuntu-latest
-    env:
-      UPX_BIN: /usr/bin/upx
-      MUSL_CROSS_BACKEND: bootlin
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: ~/.local/opt/musl-cross
-          key: musl-cross-bootlin-2024.05-1-${{ hashFiles('scripts/install-musl-cross.sh', 'scripts/targets.sh') }}
-          restore-keys: musl-cross-bootlin-
       - name: Dependencies
         run: |
-          sudo dpkg --add-architecture i386
-          sudo dpkg --add-architecture arm64
-          sudo dpkg --add-architecture armhf
-          sudo dpkg --add-architecture riscv64
-          # Ubuntu 24.04+ DEB822 sources fetch foreign arches from security.ubuntu.com (404).
-          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-            sudo mv /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.bak
-          fi
-          sudo truncate -s 0 /etc/apt/sources.list
-          printf '%s\n' \
-            'deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse' \
-            'deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse' \
-            'deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse' \
-            'deb [arch=amd64,i386] http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse' \
-            | sudo tee /etc/apt/sources.list.d/ubuntu-native.list >/dev/null
-          printf '%s\n' \
-            'deb [arch=arm64,armhf,riscv64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse' \
-            'deb [arch=arm64,armhf,riscv64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse' \
-            'deb [arch=arm64,armhf,riscv64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse' \
-            | sudo tee /etc/apt/sources.list.d/ubuntu-ports.list >/dev/null
           sudo apt-get update
-          sudo apt-get install -y build-essential musl-tools musl-dev libx11-dev libsdl2-dev \
-            libwayland-dev wayland-protocols libxkbcommon-dev \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf gcc-i686-linux-gnu \
-            gcc-riscv64-linux-gnu gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
-            libx11-dev:arm64 libx11-dev:armhf libx11-dev:i386 libx11-dev:riscv64 \
-            libsdl2-dev:arm64 libsdl2-dev:armhf libsdl2-dev:i386 libsdl2-dev:riscv64 \
-            qemu-user-static zip pkg-config upx-ucl curl
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.local/opt/djgpp
-            ~/.local/opt/emsdk
-          key: dos-web-djgpp3.4-gcc1220-emsdk6.0.11
-      - name: DOS (DJGPP) + Web (emscripten) toolchains
+          sudo apt-get install -y build-essential mingw-w64
+      - name: Build and test Linux + Windows consoles
         run: |
-          mkdir -p ~/.local/opt
-          if [ ! -x ~/.local/opt/djgpp/bin/i586-pc-msdosdjgpp-gcc ]; then
-            curl -fsSL https://github.com/andrewwutw/build-djgpp/releases/download/v3.4/djgpp-linux64-gcc1220.tar.bz2 \
-              | tar -xj -C ~/.local/opt
-          fi
-          if [ ! -d ~/.local/opt/emsdk/upstream ]; then
-            rm -rf ~/.local/opt/emsdk
-            git clone -q --depth 1 https://github.com/emscripten-core/emsdk.git ~/.local/opt/emsdk
-            ~/.local/opt/emsdk/emsdk install 6.0.11
-          fi
-          ~/.local/opt/emsdk/emsdk activate 6.0.11
-          echo "$HOME/.local/opt/djgpp/bin" >> "$GITHUB_PATH"
-      - name: Build Linux + Windows + cross + musl + DOS + Web
+          make ansi-check test
+          make linux windows
+      - name: Prepare release assets
         run: |
-          make release-linux release-windows
-          make release-cross-linux || true
-          make release-musl-linux
-          make release-dos
-          . ~/.local/opt/emsdk/emsdk_env.sh
-          make release-extra
-          ls -la dist-release/flat/mote-dos.exe dist-release/flat/mote-web.zip
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-linux
-          path: dist-release/
-          if-no-files-found: warn
-
-  macos:
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - name: Dependencies
-        run: brew install sdl2 pkg-config
-      - name: Build macOS
-        run: sh scripts/release-macos.sh
-      - name: Smoke
-        run: |
-          arch=$(uname -m | sed 's/x86_64/amd64/;s/arm64/arm64/')
-          dist-release/flat/mote-macos-${arch}-console --version
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-macos
-          path: dist-release/
-
-  freebsd:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build on FreeBSD 14.2
-        uses: vmactions/freebsd-vm@v1
-        with:
-          release: '14.2'
-          usesh: true
-          prepare: |
-            pkg install -y gmake zip pkgconf libX11 sdl2 upx
-          run: |
-            export UPX_BIN="$(command -v upx || echo /usr/local/bin/upx)"
-            gmake --version
-            sh scripts/release-bsd.sh
-            dist-release/flat/mote-freebsd-amd64-console --version
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-freebsd
-          path: dist-release/
-          if-no-files-found: warn
-
-  openbsd:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build on OpenBSD 7.7
-        uses: vmactions/openbsd-vm@v1
-        with:
-          release: '7.7'
-          usesh: true
-          prepare: |
-            export PKG_PATH=https://cdn.openbsd.org/pub/OpenBSD/7.7/packages/amd64/
-            pkg_add -U gmake zip libx11 sdl2
-          run: |
-            gmake --version
-            sh scripts/release-bsd.sh
-            dist-release/flat/mote-openbsd-amd64-console --version
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-openbsd
-          path: dist-release/
-          if-no-files-found: warn
-
-  merge:
-    needs: [linux, macos, freebsd, openbsd]
-    if: always() && !cancelled() && needs.linux.result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download platform artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: false
-      - name: Merge release tree
-        run: |
-          set -eu
-          merge_one() {
-            [ -d "$1" ] || return 0
-            echo "merge: $1"
-            sh scripts/ci-merge-release.sh "$1"
-          }
-          merge_one artifacts/dist-linux
-          merge_one artifacts/dist-macos
-          merge_one artifacts/dist-freebsd
-          merge_one artifacts/dist-openbsd
-      - name: Upload bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: mote-dist
-          path: |
-            dist-release/by-platform/**
-            dist-release/flat/**
-            dist-release/mote-all-platforms.zip
-            dist-release/SHA256SUMS
-          if-no-files-found: warn
-      - name: Prepare release notes
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          n="docs/releases/${GITHUB_REF_NAME}.md"
-          [ -f "$n" ] || n="docs/releases/v2.0.0.md"
-          cp "$n" /tmp/release-notes.md
+          make release
       - name: GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           draft: false
           make_latest: true
           overwrite_files: true
           files: |
-            dist-release/mote-all-platforms.zip
-            dist-release/flat/*
-          body_path: /tmp/release-notes.md
-          fail_on_unmatched_files: false
+            dist-release/mote-posix-console
+            dist-release/mote-windows-console.exe
+            dist-release/SHA256SUMS
