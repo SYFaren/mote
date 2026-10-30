@@ -42,6 +42,19 @@ can be added later. See [`docs/BUILD.md`](docs/BUILD.md).
 - **Safe save**: written to a temporary file, flushed with fsync, then renamed
   over the original, so a failed save never destroys the old file. An untitled
   document asks for a name.
+- **Crash recovery**: after each changed input batch, dirty documents are written
+  to a separate snapshot next to the config (`config.recovery-N`, slots 0–15).
+  On the next launch: `Enter` restores, `Ctrl+Q` discards, `Esc` exits and keeps
+  the snapshot. Original files are never overwritten by restoration; review and
+  save explicitly. Untitled documents and LF/CRLF mode are included; undo history
+  and caret positions are not. Relative paths restore as untitled to avoid saving
+  into the wrong working directory. Recovery takes precedence over CLI files.
+  Normal exit removes that instance's snapshot. Concurrent instances use locked
+  slots; if no slot is available, recovery is disabled with a status warning.
+  Snapshot/write failures retain the previous copy and show a warning. The latest
+  input batch may still be lost in a crash; this is not a guarantee against power
+  loss. Whole-document snapshots can slow editing of large files. Copies contain
+  plaintext (POSIX permissions `0600`; Windows inherits the config directory ACL).
 - **Unsaved-changes question** on quit, close or open: `Ctrl+S` save,
   `Ctrl+Q` discard, `Esc` cancel. Quitting saves every modified document and
   asks for names of untitled ones first.
@@ -50,14 +63,23 @@ can be added later. See [`docs/BUILD.md`](docs/BUILD.md).
 
 - UTF-8 throughout: caret moves and deletes whole characters (Cyrillic, emoji).
 - A UTF-8 BOM is dropped on load.
-- **CP1251** (Windows Cyrillic) files are detected and converted to UTF-8.
+- A file with non-ASCII bytes that is not valid UTF-8 requires confirmation:
+  `Enter` interprets it as Windows-1251 and converts it to UTF-8; `Esc` cancels
+  without replacing the current document. This is an explicit choice, not
+  encoding detection: convert Latin-1 or other encodings externally first.
+  Saving writes UTF-8, not CP1251. Files containing ASCII control bytes other
+  than Tab, LF and CR (including NUL and DEL) are refused as binary/control data.
 - **LF / CRLF** detected on load and kept on save; a lone CR becomes LF.
   `Alt+E` toggles the line ending.
-- File size limit: 64 MB.
+- File size limit: 64 MiB per document. There is no aggregate limit across the
+  six tabs; the gap buffer reserves roughly the file size, and undo stores edit
+  data separately, so peak memory can be substantially higher than the file.
 
 ### Editing
 
-- Undo / redo, 512 steps per document; consecutive typing is one step.
+- Undo / redo, up to 512 edit operations per document; these store inserted or
+  deleted text (deltas), not full-document snapshots. Consecutive typing is one
+  step, and large edits can still use substantial memory.
 - **Auto-close** of `(` `[` `{` `"` `'`; with a selection the pair wraps it.
 - **Auto-indent**: Enter keeps the current line's indentation.
 - **Tab** inserts a tab (width 4) or indents every selected line;
@@ -95,7 +117,8 @@ can be added later. See [`docs/BUILD.md`](docs/BUILD.md).
 - `Esc` clears search highlighting but keeps the query; `F3` resumes the search.
 - **Regex**: type `/pattern/`. Supports `.` `*` `+` `?`, `^` `$` (line start
   and end), `[...]` `[^...]` with ranges, `\d` `\w` `\s` and escapes. No groups
-  or alternation.
+  or alternation. To find a literal `/`, escape it as `\/`: for example,
+  `/a\/b/` matches `a/b`. Replacement text is literal, not regex-unescaped.
 - `F3` / `Shift+F3`: next / previous match, wrapping around the file.
 - **Replace** (`Ctrl+R`) replaces every match and reports the count. Plain text
   is the replacement for the last search; `/find/replace/` sets both as a regex.
@@ -115,8 +138,10 @@ can be added later. See [`docs/BUILD.md`](docs/BUILD.md).
   horizontally.
 - **Show whitespace** (`F7`): `.` and `>` depending on the terminal.
 - **Themes** (`Ctrl+T`): dark, light, slate.
-- **Zoom** (`Ctrl+=` / `Ctrl+-` / `Ctrl+0`), 8–48 px, default 15. In text-mode
-  ports the terminal owns the font.
+- **Zoom** (`Ctrl+=` / `Ctrl+-` / `Ctrl+0`), 8–48 px, default 15. This is a
+  platform hook for GUI ports; the current terminal ports cannot change the
+  terminal font. Legacy terminal keyboard protocols often cannot report
+  `Ctrl+=`, so that shortcut may not reach the app.
 - **Help** (`F1`): one or two columns depending on width, scrollable.
 
 ### Syntax highlighting
@@ -131,6 +156,11 @@ that starts above the screen is still tracked.
 
 `Ctrl+Shift+letter` is not distinguishable from `Ctrl+letter` in most
 terminals, so those actions also have an `Alt` key.
+
+The POSIX console disables terminal software flow control while running, so
+`Ctrl+S` and `Ctrl+Q` normally reach the editor. Multiplexers or remote terminal
+setups may still intercept them; if a shortcut is swallowed, adjust the
+terminal/multiplexer configuration to release it.
 
 ### File
 
@@ -198,6 +228,21 @@ mote [-h] [-v] [-H] [-g WxH] [file ...]
 Saved on exit: theme, font size, word wrap, whitespace, find
 options and recent files.
 
+The config is a plain text `key=value` file. For example:
+
+```text
+theme=0
+font_px=15
+wrap=1
+show_ws=0
+find_case=0
+find_word=0
+```
+
+Unknown keys are ignored. `-g WxH` sets the terminal grid size (columns × rows)
+for these console ports; it does not resize the terminal window, so the host
+terminal may resize or clip the displayed grid.
+
 | System | Config file |
 |---|---|
 | Linux | `~/.config/mote/config` (or `$XDG_CONFIG_HOME/mote/config`) |
@@ -228,7 +273,13 @@ overlay design remain suitable for additional backends.
 ## Layout and release
 
 ```text
-core/       editor, buffer, keymap, utf8, undo, syntax, regex, config
+core/
+  app/      application lifecycle and command-line handling
+  document/ gap buffer and undo history
+  editor/   editor state, input and rendering
+  syntax/   syntax highlighting and regex matcher
+  utils/    UTF-8, formatting, themes and shared definitions
+  system/   config, key mapping and directory listing
 plat/       platform.h (overlay contract)
 overlay/    console (POSIX) · winconsole (Windows)
 docs/       build and release guidance
