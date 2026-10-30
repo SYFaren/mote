@@ -13,11 +13,15 @@ posix console linux:
 windows winconsole:
 	$(MAKE) -C overlay/winconsole WINCC="$(WINCC)" MOTE_BUILDDIR=build
 
+CORE_INCLUDES = -Icore -Icore/app -Icore/editor -Icore/document -Icore/syntax \
+	-Icore/utils -Icore/system -Iplat
+CORE_HEADERS = $(wildcard core/*/*.h) plat/platform.h plat/mote_ansi.h
 ANSI_CFLAGS = -std=c89 -pedantic -Wall -Wextra -Wdeclaration-after-statement \
-	-Wno-long-long -Wno-overlength-strings -Icore -Iplat -c
-CORE_ANSI = core/buffer.c core/utf8.c core/undo.c core/hl.c core/editor.c \
-	core/theme.c core/config.c core/mote_snprintf.c core/regex.c core/dirlist.c core/app.c \
-	core/keymap.c
+	-Wno-long-long -Wno-overlength-strings $(CORE_INCLUDES) -c
+CORE_ANSI = core/document/buffer.c core/utils/utf8.c core/document/undo.c \
+	core/syntax/hl.c core/editor/editor.c core/utils/theme.c core/system/config.c \
+	core/utils/mote_snprintf.c core/syntax/regex.c core/system/dirlist.c \
+	core/app/app.c core/system/keymap.c
 
 ansi-check: $(CORE_ANSI) plat/platform.h
 	@mkdir -p build/ansi
@@ -32,20 +36,24 @@ test: build/test_core build/test_editor_keys build/test_console_esc
 	./build/test_editor_keys
 	@script -q -c "./build/test_console_esc" /dev/null 2>/dev/null || echo "skip test_console_esc (no TTY)"
 
-CORE_TEST = core/buffer.c core/utf8.c core/undo.c core/mote_snprintf.c core/regex.c core/dirlist.c core/hl.c test/plat_stub.c
-build/test_core: test/test_core.c $(CORE_TEST) plat/platform.h | build
+CORE_TEST = core/document/buffer.c core/utils/utf8.c core/document/undo.c \
+	core/utils/mote_snprintf.c core/syntax/regex.c core/system/dirlist.c \
+	core/syntax/hl.c test/plat_stub.c
+build/test_core: test/test_core.c $(CORE_TEST) $(CORE_HEADERS) Makefile | build
 	$(CC) -std=c89 -pedantic -Wall -Wextra -Wdeclaration-after-statement \
-		-Wno-overlength-strings -Icore -Iplat -O0 -g -o $@ test/test_core.c $(CORE_TEST)
+		-Wno-overlength-strings $(CORE_INCLUDES) -O0 -g -o $@ test/test_core.c $(CORE_TEST)
 
-CORE_EDTEST = core/buffer.c core/utf8.c core/undo.c core/mote_snprintf.c core/regex.c core/dirlist.c core/hl.c \
-	core/editor.c core/theme.c core/config.c core/keymap.c
-build/test_editor_keys: test/test_editor_keys.c $(CORE_EDTEST) plat/platform.h | build
+CORE_EDTEST = core/document/buffer.c core/utils/utf8.c core/document/undo.c \
+	core/utils/mote_snprintf.c core/syntax/regex.c core/system/dirlist.c \
+	core/syntax/hl.c core/editor/editor.c core/utils/theme.c core/system/config.c \
+	core/system/keymap.c
+build/test_editor_keys: test/test_editor_keys.c $(CORE_EDTEST) $(CORE_HEADERS) Makefile | build
 	$(CC) -std=c89 -Wall -Wextra -Wno-unused-parameter \
-		-Icore -Iplat -O0 -g -o $@ test/test_editor_keys.c $(CORE_EDTEST)
+		$(CORE_INCLUDES) -O0 -g -o $@ test/test_editor_keys.c $(CORE_EDTEST)
 
-build/test_console_esc: test/test_console_esc.c overlay/console/console.c core/utf8.c core/keymap.c plat/platform.h | build
-	$(CC) -std=c99 -Wall -Wextra -D_DEFAULT_SOURCE -Icore -Iplat -DMOTE_TEST_CONSOLE_ESC -O0 -g \
-		-o $@ test/test_console_esc.c overlay/console/console.c core/utf8.c core/keymap.c
+build/test_console_esc: test/test_console_esc.c overlay/console/console.c core/utils/utf8.c core/system/keymap.c $(CORE_HEADERS) Makefile | build
+	$(CC) -std=c99 -Wall -Wextra -D_DEFAULT_SOURCE $(CORE_INCLUDES) -DMOTE_TEST_CONSOLE_ESC -O0 -g \
+		-o $@ test/test_console_esc.c overlay/console/console.c core/utils/utf8.c core/system/keymap.c
 
 smoke: ansi-check test
 	@sh test/smoke.sh

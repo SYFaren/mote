@@ -6,7 +6,9 @@ include ../core.mk
 OV = main.c console.c os.c
 SRC = $(CORE) $(OV)
 
-INCLUDES = -I$(ROOT)/core -I$(ROOT)/plat
+INCLUDES = -I$(ROOT)/core -I$(ROOT)/core/app -I$(ROOT)/core/editor \
+	-I$(ROOT)/core/document -I$(ROOT)/core/syntax -I$(ROOT)/core/utils \
+	-I$(ROOT)/core/system -I$(ROOT)/plat
 CFLAGS = -std=c99 -Wall -Wextra $(INCLUDES) -D_DEFAULT_SOURCE -Oz -DNDEBUG \
 	-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables \
 	-fno-unwind-tables -fno-ident -fomit-frame-pointer -fno-stack-protector \
