@@ -434,6 +434,7 @@ static mote_bool push_delete(Editor *e, Doc *d, size_t pos, size_t n) {
   bm_line_delete(d, pos, nl);
   buf_delete(&d->buf, pos, n);
   d->dirty = MOTE_TRUE;
+  e->recovery_revision++;
   clamp_caret(d);
   vrow_invalidate(e);
   if (nl) lines_mark_dirty(d);
@@ -458,6 +459,7 @@ static mote_bool push_insert(Editor *e, Doc *d, size_t pos, const char *s, size_
     return MOTE_FALSE;
   }
   d->dirty = MOTE_TRUE;
+  e->recovery_revision++;
   clamp_caret(d);
   vrow_invalidate(e);
   if (nl) {
@@ -545,6 +547,7 @@ static void apply_undo_act(Editor *e, Doc *d, UndoAct *a, mote_bool redo) {
     d->caret = a->pos;
   }
   d->dirty = MOTE_TRUE;
+  e->recovery_revision++;
   lines_mark_dirty(d);
   vrow_invalidate(e);
   place_caret(e, d, d->caret);
@@ -745,6 +748,7 @@ static mote_bool save_to(Editor *e, Doc *d, const char *path) {
   }
   mote_snprintf(d->path, sizeof d->path, "%s", path);
   d->dirty = MOTE_FALSE;
+  e->recovery_revision++;
   recent_add(e, path);
   set_status(e, "saved");
   return MOTE_TRUE;
@@ -1457,6 +1461,7 @@ static mote_bool open_path_encoding(Editor *e, const char *path,
     }
   }
   doc_set_contents(d, &nb, path);
+  e->recovery_revision++;
   if (exists) normalize_eol(d);
   vrow_invalidate(e);
   recent_add(e, path);
@@ -1506,6 +1511,7 @@ void ed_new_doc(Editor *e) {
 /* Close the current doc without asking; the last one becomes empty. */
 static void close_doc_force(Editor *e) {
   Doc *d = D(e);
+  e->recovery_revision++;
   doc_free(d);
   vrow_invalidate(e);
   if (e->ndocs <= 1) {
@@ -1625,6 +1631,7 @@ static void reload_doc(Editor *e, Doc *d) {
 }
 
 static void toggle_eol(Editor *e, Doc *d) {
+  e->recovery_revision++;
   d->eol = d->eol == EOL_LF ? EOL_CRLF : EOL_LF;
   d->dirty = MOTE_TRUE;
   set_status(e, d->eol == EOL_CRLF ? "eol CRLF" : "eol LF");
@@ -2316,7 +2323,8 @@ static void draw_status(Editor *e, Doc *d, Plat *p, const Theme *t,
   if (pfx[0])
     mote_snprintf(bar, sizeof bar, "%s%s%s", pfx, e->prompt[0] ? " " : "", e->prompt);
   else if (e->mode == MODE_QUITASK || e->mode == MODE_OPENASK ||
-           e->mode == MODE_CLOSEASK || e->mode == MODE_ENCODINGASK)
+           e->mode == MODE_CLOSEASK || e->mode == MODE_ENCODINGASK ||
+           e->mode == MODE_RECOVERYASK)
     mote_snprintf(bar, sizeof bar, "%s", e->status);
   else if (e->find_active && e->find[0])
     mote_snprintf(bar, sizeof bar, "Find: %s%s%s  %s", e->find_regex ? "/" : "",

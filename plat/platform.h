@@ -110,5 +110,9 @@ int plat_remove(const char *path);
 int plat_rename(const char *from, const char *to);
 void plat_fsync_file(FILE *f);
 int plat_config_path(char *out, size_t n);
+/* Exclusive nonblocking session lock; release by fclose(). Never unlink it. */
+FILE *plat_lock_file(const char *path);
+/* Create/truncate a private recovery temporary file (0600 on POSIX). */
+FILE *plat_private_write(const char *path);
 
 #endif

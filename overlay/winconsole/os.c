@@ -26,6 +26,28 @@ FILE *plat_fopen(const char *path, const char *mode) {
   return f;
 }
 
+FILE *plat_lock_file(const char *path) {
+  wchar_t *w = win_wide(path);
+  HANDLE h;
+  int fd;
+  FILE *f;
+  if (!w) return NULL;
+  h = CreateFileW(w, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                  OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  free(w);
+  if (h == INVALID_HANDLE_VALUE) return NULL;
+  fd = _open_osfhandle((intptr_t)h, _O_RDWR);
+  if (fd < 0) { CloseHandle(h); return NULL; }
+  f = _fdopen(fd, "r+");
+  if (!f) _close(fd);
+  return f;
+}
+
+FILE *plat_private_write(const char *path) {
+  /* Inherit the user's AppData directory ACL. */
+  return plat_fopen(path, "wb");
+}
+
 int plat_remove(const char *path) {
   wchar_t *w = win_wide(path);
   BOOL ok;

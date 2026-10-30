@@ -3,6 +3,7 @@
 #include "config.h"
 #include "theme.h"
 #include "mote_snprintf.h"
+#include "recovery.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,6 +90,7 @@ int mote_main(int argc, char **argv, const MoteApp *app) {
   static Editor ed; /* keep the large editor state off the process stack */
   Plat *plat;
   MoteCfg cfg;
+  Recovery recovery;
   const char *files[MAX_DOCS];
   int nfiles = 0, i, w, h;
   int next_file = 0;
@@ -136,6 +138,48 @@ int mote_main(int argc, char **argv, const MoteApp *app) {
   cfg_to_editor(&cfg, &ed);
   plat_set_font_px(plat, cfg.font_px);
 
+  if (!recovery_begin(&recovery)) {
+    mote_snprintf(ed.status, sizeof ed.status, "Recovery unavailable (lock/path)");
+  } else if (recovery_exists(&recovery)) {
+    mote_bool decided = MOTE_FALSE;
+    ed.mode = MODE_RECOVERYASK;
+    mote_snprintf(ed.status, sizeof ed.status,
+                  "Recovery found: Enter restore, Ctrl+Q discard, Esc exit");
+    while (!decided) {
+      PlatEvent ev;
+      ed_draw(&ed, plat);
+      plat_wait(plat);
+      while (plat_poll(plat, &ev)) {
+        if (ev.type == PE_QUIT ||
+            (ev.type == PE_KEY && ev.key == PK_ESCAPE)) {
+          recovery_end(&recovery, MOTE_FALSE);
+          ed_free(&ed);
+          plat_destroy(plat);
+          return 0;
+        }
+        if (ev.type == PE_KEY && ev.key == PK_ENTER) {
+          if (recovery_restore(&recovery, &ed)) {
+            nfiles = 0; /* recovered docs first; CLI paths can be reopened */
+            decided = MOTE_TRUE;
+            mote_snprintf(ed.status, sizeof ed.status, "Recovered; review and save");
+          } else {
+            mote_snprintf(ed.status, sizeof ed.status,
+                          "Recovery unreadable: Ctrl+Q discard, Esc exit (keep)");
+          }
+        } else if (ev.type == PE_KEY && ev.key == PK_QUIT) {
+          if (plat_remove(recovery.path) == 0) {
+            decided = MOTE_TRUE;
+            mote_snprintf(ed.status, sizeof ed.status, "Recovery discarded; F1 help");
+          }
+          else mote_snprintf(ed.status, sizeof ed.status, "Cannot remove recovery; Esc exits");
+        }
+        ed.need_draw = MOTE_TRUE;
+        if (decided) break;
+      }
+    }
+    ed.mode = MODE_EDIT;
+  }
+
   for (i = 0; i < nfiles; i++) {
     if (i > 0) ed_new_doc(&ed);
     ed_open_path(&ed, files[i]);
@@ -158,6 +202,14 @@ int mote_main(int argc, char **argv, const MoteApp *app) {
       ed_new_doc(&ed);
       ed_open_path(&ed, files[next_file++]);
     }
+    /* Checkpoint changed documents after each input batch, not from a signal
+       handler. Atomic replacement keeps the previous snapshot on failure. */
+    if (!ed.want_quit && recovery.lock &&
+        recovery.revision != ed.recovery_revision &&
+        !recovery_checkpoint(&recovery, &ed)) {
+      mote_snprintf(ed.status, sizeof ed.status, "Recovery write failed; save manually");
+      ed.need_draw = MOTE_TRUE;
+    }
     if (ed.need_draw) ed_draw(&ed, plat);
   }
 
@@ -166,6 +218,7 @@ int mote_main(int argc, char **argv, const MoteApp *app) {
   editor_to_cfg(&ed, &cfg);
   cfg_save(&cfg);
 
+  recovery_end(&recovery, MOTE_TRUE);
   ed_free(&ed);
   plat_destroy(plat);
   return 0;

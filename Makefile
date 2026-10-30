@@ -3,7 +3,7 @@
 CC ?= cc
 WINCC ?= x86_64-w64-mingw32-gcc
 
-.PHONY: all posix console linux windows winconsole test smoke ansi-check clean release
+.PHONY: all posix console linux windows winconsole test recovery-test smoke ansi-check clean release
 
 all: linux
 
@@ -21,7 +21,7 @@ ANSI_CFLAGS = -std=c89 -pedantic -Wall -Wextra -Wdeclaration-after-statement \
 CORE_ANSI = core/document/buffer.c core/utils/utf8.c core/document/undo.c \
 	core/syntax/hl.c core/editor/editor.c core/utils/theme.c core/system/config.c \
 	core/utils/mote_snprintf.c core/syntax/regex.c core/system/dirlist.c \
-	core/app/app.c core/system/keymap.c
+	core/app/app.c core/app/recovery.c core/system/keymap.c
 
 ansi-check: $(CORE_ANSI) plat/platform.h
 	@mkdir -p build/ansi
@@ -46,7 +46,7 @@ build/test_core: test/test_core.c $(CORE_TEST) $(CORE_HEADERS) Makefile | build
 CORE_EDTEST = core/document/buffer.c core/utils/utf8.c core/document/undo.c \
 	core/utils/mote_snprintf.c core/syntax/regex.c core/system/dirlist.c \
 	core/syntax/hl.c core/editor/editor.c core/utils/theme.c core/system/config.c \
-	core/system/keymap.c
+	core/system/keymap.c core/app/recovery.c
 build/test_editor_keys: test/test_editor_keys.c $(CORE_EDTEST) $(CORE_HEADERS) Makefile | build
 	$(CC) -std=c89 -Wall -Wextra -Wno-unused-parameter \
 		$(CORE_INCLUDES) -O0 -g -o $@ test/test_editor_keys.c $(CORE_EDTEST)
@@ -57,6 +57,9 @@ build/test_console_esc: test/test_console_esc.c overlay/console/console.c core/u
 
 smoke: ansi-check test
 	@sh test/smoke.sh
+
+recovery-test: posix
+	python3 test/test_recovery.py
 
 release: test ansi-check
 	$(MAKE) linux windows

@@ -6,10 +6,35 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/file.h>
+#include <fcntl.h>
 
 FILE *plat_fopen(const char *path, const char *mode) {
   if (!path || !mode) return NULL;
   return fopen(path, mode);
+}
+
+FILE *plat_lock_file(const char *path) {
+  int fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600);
+  FILE *f;
+  if (fd < 0) return NULL;
+  if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+    close(fd);
+    return NULL;
+  }
+  f = fdopen(fd, "r+");
+  if (!f) close(fd);
+  return f;
+}
+
+FILE *plat_private_write(const char *path) {
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
+  FILE *f;
+  if (fd < 0) return NULL;
+  if (fchmod(fd, 0600) != 0) { close(fd); return NULL; }
+  f = fdopen(fd, "wb");
+  if (!f) close(fd);
+  return f;
 }
 
 int plat_remove(const char *path) {

@@ -47,3 +47,15 @@ Tagged GitHub releases are built by `.github/workflows/release.yml`. The release
 workflow publishes these binaries and `SHA256SUMS`. This is the current
 maintainer target set, not a restriction on the overlay architecture; future
 overlays can be added as separate targets and CI jobs.
+
+## Recovery platform hooks
+
+The shared `core/app/recovery.c` is included by `overlay/core.mk`. Each overlay
+must implement `plat_lock_file()` (exclusive, nonblocking session lock released
+by `fclose()` or process exit) and `plat_private_write()` (private recovery temp
+file creation). POSIX uses `flock` and mode `0600`; Windows uses an exclusive
+file handle and inherits the configuration directory ACL. Lock files must not
+be unlinked on exit. Recovery snapshots are local plaintext data, not release
+artifacts; keep runtime tests isolated with a temporary configuration directory.
+`make recovery-test` runs POSIX PTY crash/restore and concurrent-instance checks
+with Python 3 and an isolated temporary configuration directory.

@@ -3,6 +3,7 @@
 #include "common.h"
 #include "mote_snprintf.h"
 #include "theme.h"
+#include "recovery.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -140,6 +141,11 @@ void plat_fsync_file(FILE *f) {
 int plat_config_path(char *out, size_t n) {
   return mote_snprintf(out, n, "/tmp/mote-test-config") >= (int)n ? -1 : 0;
 }
+FILE *plat_lock_file(const char *path) {
+  (void)path;
+  return NULL; /* recovery tests supply an isolated lock explicitly */
+}
+FILE *plat_private_write(const char *path) { return fopen(path, "wb"); }
 
 static void push_key(Plat *p, PlatKey k, mote_bool ctrl, mote_bool shift) {
   PlatEvent e;
@@ -186,6 +192,61 @@ int main(void) {
   expect(p != NULL, "plat_create");
   expect(ed_init(&ed), "ed_init");
   ed_draw(&ed, p);
+
+  {
+    Recovery r;
+    Editor restored;
+    FILE *f;
+    memset(&r, 0, sizeof r);
+    r.lock = tmpfile();
+    mote_snprintf(r.path, sizeof r.path, "%s.recovery", path);
+    expect(r.lock != NULL, "recovery test lock");
+    expect(ed_init(&restored), "recovery destination init");
+    push_text(p, "unsaved UTF-8: \xD0\xAF\n");
+    drain(&ed, p);
+    ed.docs[0].eol = EOL_CRLF;
+    ed_new_doc(&ed);
+    push_text(p, "second tab");
+    drain(&ed, p);
+    mote_snprintf(ed.docs[1].path, sizeof ed.docs[1].path, "%s", path2);
+    expect(recovery_checkpoint(&r, &ed), "write recovery snapshot");
+    expect(recovery_exists(&r), "snapshot exists");
+    expect(recovery_restore(&r, &restored), "restore recovery snapshot");
+    expect(restored.ndocs == 2 && restored.docs[0].dirty &&
+           !restored.docs[0].path[0] && restored.docs[0].eol == EOL_CRLF,
+           "restore unnamed dirty document and EOL");
+    expect(buf_match(&restored.docs[0].buf, 0, "unsaved UTF-8: \xD0\xAF\n", 17),
+           "restore UTF-8 bytes");
+    expect(!strcmp(restored.docs[1].path, path2) &&
+           buf_match(&restored.docs[1].buf, 0, "second tab", 10),
+           "restore named document without touching original file");
+    mote_snprintf(ed.docs[1].path, sizeof ed.docs[1].path, "relative.txt");
+    expect(recovery_checkpoint(&r, &ed) && recovery_restore(&r, &restored) &&
+           !restored.docs[1].path[0], "relative recovery paths require Save As");
+    {
+      char original[sizeof r.path];
+      mote_snprintf(original, sizeof original, "%s", r.path);
+      mote_snprintf(r.path, sizeof r.path, "/dev/null/no-recovery");
+      expect(!recovery_checkpoint(&r, &ed), "failed recovery write reported");
+      mote_snprintf(r.path, sizeof r.path, "%s", original);
+      expect(recovery_restore(&r, &restored),
+             "previous snapshot remains available after write failure");
+    }
+    f = fopen(r.path, "wb");
+    if (f) {
+      fputs("MOTE-RECOVERY-1\n2\n4\n10\n0\ntruncated", f);
+      fclose(f);
+      expect(!recovery_restore(&r, &restored) && restored.ndocs == 2,
+             "corrupt recovery rejected transactionally");
+    }
+    ed.docs[0].dirty = ed.docs[1].dirty = MOTE_FALSE;
+    expect(recovery_checkpoint(&r, &ed) && !recovery_exists(&r),
+           "saved/discarded documents remove snapshot");
+    recovery_end(&r, MOTE_TRUE);
+    ed_free(&restored);
+    ed_free(&ed);
+    expect(ed_init(&ed), "ed_init after recovery tests");
+  }
 
   {
     FILE *f = fopen(path, "wb");

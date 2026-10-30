@@ -21,7 +21,8 @@ typedef enum {
   MODE_QUICKOPEN,
   MODE_OPENASK,
   MODE_CLOSEASK,
-  MODE_ENCODINGASK
+  MODE_ENCODINGASK,
+  MODE_RECOVERYASK /* handled by the application before opening CLI files */
 } EdMode;
 
 /* What to do once the unsaved doc behind a QUITASK / OPENASK /
@@ -68,6 +69,7 @@ typedef struct {
   int ndocs, cur;
   mote_bool need_draw;
   mote_bool want_quit;
+  unsigned long recovery_revision; /* changes to document data / identity */
   PendingAction pending;
   EdMode mode;
   char prompt[256];
