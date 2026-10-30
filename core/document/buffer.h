@@ -20,6 +20,14 @@ mote_bool buf_match(const Buf *b, size_t pos, const char *s, size_t n);
 mote_bool buf_match_ci(const Buf *b, size_t pos, const char *s, size_t n);
 void buf_shrink_gap(Buf *b);
 char *buf_strdup(const Buf *b);
+typedef enum {
+  BUF_LOAD_ERROR = 0,
+  BUF_LOAD_OK,
+  BUF_LOAD_ENCODING,
+  BUF_LOAD_BINARY
+} BufLoadResult;
+/* Non-UTF-8 text requires explicit permission to interpret it as CP1251. */
+BufLoadResult buf_load_text(Buf *b, const char *path, mote_bool allow_cp1251);
 mote_bool buf_load(Buf *b, const char *path);
 mote_bool buf_save(const Buf *b, const char *path);
 void buf_seek(Buf *b, size_t pos);

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include "mote_snprintf.h"
 
 #define GAP_MIN 64
@@ -192,22 +193,22 @@ static int bytes_are_utf8(const char *s, size_t n) {
   return 1;
 }
 
-/* A file that is not valid UTF-8 is taken as Windows-1251 and converted. */
-static mote_bool ensure_utf8_text(Buf *b) {
+static BufLoadResult ensure_utf8_text(Buf *b, mote_bool allow_cp1251) {
   size_t len = buf_len(b), i, out_n = 0, capa;
   char *tmp, *src;
   int has_hi = 0;
-  if (!len || !b->data) return MOTE_TRUE;
+  if (!len || !b->data) return BUF_LOAD_OK;
   move_gap(b, len); /* text is one block now */
   src = b->data;
   for (i = 0; i < len; i++) {
-    if ((unsigned char)src[i] >= 0x80) {
-      has_hi = 1;
-      break;
-    }
+    unsigned char c = (unsigned char)src[i];
+    /* Reject binary control bytes, even in otherwise valid ASCII/UTF-8. */
+    if ((c < 0x20 && c != '\t' && c != '\n' && c != '\r') || c == 0x7F)
+      return BUF_LOAD_BINARY;
+    if (c >= 0x80) has_hi = 1;
   }
-  if (!has_hi) return MOTE_TRUE;
-  if (bytes_are_utf8(src, len)) return MOTE_TRUE;
+  if (!has_hi || bytes_are_utf8(src, len)) return BUF_LOAD_OK;
+  if (!allow_cp1251) return BUF_LOAD_ENCODING;
   /* each byte becomes at most 3 UTF-8 bytes */
   capa = len * 3 + 1;
   tmp = (char *)malloc(capa);
@@ -232,13 +233,15 @@ static mote_bool ensure_utf8_text(Buf *b) {
   b->gap_start = out_n;
   b->gap_end = b->capa;
   free(tmp);
-  return MOTE_TRUE;
+  return BUF_LOAD_OK;
 }
 
-mote_bool buf_load(Buf *b, const char *path) {
+BufLoadResult buf_load_text(Buf *b, const char *path, mote_bool allow_cp1251) {
   FILE *f;
   long sz;
   size_t n;
+  BufLoadResult result;
+  errno = 0;
   if (!path || !path[0]) return MOTE_FALSE;
   buf_free(b);
   f = plat_fopen(path, "rb");
@@ -270,11 +273,17 @@ mote_bool buf_load(Buf *b, const char *path) {
   }
   b->gap_start = n;
   b->gap_end = b->capa;
-  if (!ensure_utf8_text(b)) {
+  result = ensure_utf8_text(b, allow_cp1251);
+  if (result != BUF_LOAD_OK) {
     buf_free(b);
-    return MOTE_FALSE;
+    errno = 0; /* A format decision must not be mistaken for ENOENT. */
+    return result;
   }
-  return MOTE_TRUE;
+  return BUF_LOAD_OK;
+}
+
+mote_bool buf_load(Buf *b, const char *path) {
+  return buf_load_text(b, path, MOTE_FALSE) == BUF_LOAD_OK;
 }
 
 mote_bool buf_save(const Buf *b, const char *path) {

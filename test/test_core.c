@@ -110,6 +110,7 @@ int main(void) {
   CHECK(re("ab\ncd", 0, "ab$", MOTE_FALSE) == 2);
   CHECK(re("ab\ncd", 3, "^cd", MOTE_FALSE) == 2);
   CHECK(re("ab\ncd", 1, "^b", MOTE_FALSE) == 0);
+  CHECK(re("a/b", 0, "a\\/b", MOTE_FALSE) == 3);
   buf_free(&rb);
 
   /* mote_snprintf: C99 return value (full length) and truncation */
@@ -150,6 +151,24 @@ int main(void) {
     buf_free(&b);
     CHECK(buf_init(&b, 0) && buf_load(&b, tmp));
     CHECK(buf_len(&b) == 3 && buf_at(&b, 0) == '\xEF');
+    /* Legacy encodings are ambiguous, even for a one-byte file. */
+    buf_free(&b);
+    CHECK(buf_init(&b, 0) && buf_insert(&b, 0, "\xE9", 1));
+    CHECK(buf_save(&b, tmp));
+    CHECK(buf_load_text(&b, tmp, MOTE_FALSE) == BUF_LOAD_ENCODING);
+    CHECK(buf_len(&b) == 0);
+    CHECK(buf_load_text(&b, tmp, MOTE_TRUE) == BUF_LOAD_OK);
+    CHECK(buf_len(&b) == 2 && buf_match(&b, 0, "\xD0\xB9", 2));
+    /* Embedded NUL / binary controls are never silently converted. */
+    buf_free(&b);
+    CHECK(buf_init(&b, 0) && buf_insert(&b, 0, "a\0b", 3));
+    CHECK(buf_save(&b, tmp));
+    CHECK(buf_load_text(&b, tmp, MOTE_FALSE) == BUF_LOAD_BINARY);
+    CHECK(buf_load_text(&b, tmp, MOTE_TRUE) == BUF_LOAD_BINARY);
+    buf_free(&b);
+    CHECK(buf_init(&b, 0) && buf_insert(&b, 0, "\x01\xFF", 2));
+    CHECK(buf_save(&b, tmp));
+    CHECK(buf_load_text(&b, tmp, MOTE_TRUE) == BUF_LOAD_BINARY);
     unlink(tmp);
   }
 

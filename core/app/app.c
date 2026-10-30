@@ -91,6 +91,7 @@ int mote_main(int argc, char **argv, const MoteApp *app) {
   MoteCfg cfg;
   const char *files[MAX_DOCS];
   int nfiles = 0, i, w, h;
+  int next_file = 0;
   mote_bool start_help = getenv("MOTE_START_HELP") != NULL;
 
   cfg_load(&cfg);
@@ -138,9 +139,12 @@ int mote_main(int argc, char **argv, const MoteApp *app) {
   for (i = 0; i < nfiles; i++) {
     if (i > 0) ed_new_doc(&ed);
     ed_open_path(&ed, files[i]);
+    next_file = i + 1;
+    /* Do not replace an unanswered encoding decision with the next file. */
+    if (ed.mode == MODE_ENCODINGASK) break;
   }
-  ed.cur = 0;
-  if (start_help) ed.mode = MODE_HELP; /* after files, so help shows over them */
+  if (ed.mode != MODE_ENCODINGASK) ed.cur = 0;
+  if (start_help && ed.mode == MODE_EDIT) ed.mode = MODE_HELP;
 
   ed_draw(&ed, plat);
   if (app->after_first_draw) app->after_first_draw(&ed);
@@ -148,6 +152,12 @@ int mote_main(int argc, char **argv, const MoteApp *app) {
     PlatEvent ev;
     plat_wait(plat);
     while (!ed.want_quit && plat_poll(plat, &ev)) ed_handle(&ed, plat, &ev);
+    /* Continue CLI files only after the previous encoding question was
+       answered; never silently drop the remainder of the argument list. */
+    while (!ed.want_quit && ed.mode == MODE_EDIT && next_file < nfiles) {
+      ed_new_doc(&ed);
+      ed_open_path(&ed, files[next_file++]);
+    }
     if (ed.need_draw) ed_draw(&ed, plat);
   }
 

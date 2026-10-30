@@ -20,7 +20,8 @@ typedef enum {
   MODE_RECENT,
   MODE_QUICKOPEN,
   MODE_OPENASK,
-  MODE_CLOSEASK
+  MODE_CLOSEASK,
+  MODE_ENCODINGASK
 } EdMode;
 
 /* What to do once the unsaved doc behind a QUITASK / OPENASK /
@@ -74,6 +75,7 @@ typedef struct {
   char find[192];
   char replace[192];
   char pending_path[1024];
+  char encoding_path[1024]; /* file awaiting explicit CP1251 permission */
   mote_bool find_case, find_word, find_regex, find_active;
   mote_bool wrap, show_ws;
   char qf_dir[1024];

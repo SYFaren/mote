@@ -187,6 +187,48 @@ int main(void) {
   expect(ed_init(&ed), "ed_init");
   ed_draw(&ed, p);
 
+  {
+    FILE *f = fopen(path, "wb");
+    expect(f != NULL, "create encoding fixture");
+    if (f) {
+      fputs("\xCF\xF0", f);
+      fclose(f);
+      push_text(p, "keep me");
+      drain(&ed, p);
+      expect(!ed_open_path(&ed, path) && ed.mode == MODE_ENCODINGASK,
+             "legacy encoding requires explicit confirmation");
+      expect(ed.ndocs == 1 && ed.docs[0].dirty,
+             "encoding prompt does not replace edits or create a tab");
+      push_key(p, PK_ESCAPE, MOTE_FALSE, MOTE_FALSE);
+      drain(&ed, p);
+      s = doc_str(&ed);
+      expect(s && !strcmp(s, "keep me") && ed.mode == MODE_EDIT,
+             "cancel encoding leaves document unchanged");
+      free(s);
+      ed_open_path(&ed, path);
+      push_key(p, PK_ENTER, MOTE_FALSE, MOTE_FALSE);
+      drain(&ed, p);
+      s = doc_str(&ed);
+      expect(s && !strcmp(s, "\xD0\x9F\xD1\x80") && ed.ndocs == 2,
+             "confirmed CP1251 opens converted text in new tab");
+      free(s);
+      f = fopen(path, "wb");
+      if (f) {
+        fwrite("a\0b", 1, 3, f);
+        fclose(f);
+        expect(!ed_open_path(&ed, path) && ed.mode == MODE_EDIT,
+               "binary open refused without encoding question");
+        s = doc_str(&ed);
+        expect(s && !strcmp(s, "\xD0\x9F\xD1\x80"),
+               "binary rejection preserves current document");
+        free(s);
+      }
+    }
+    unlink(path);
+    ed_free(&ed);
+    expect(ed_init(&ed), "ed_init after encoding tests");
+  }
+
   push_text(p, "one one one");
   drain(&ed, p);
   mote_snprintf(ed.find, sizeof ed.find, "%s", "one");

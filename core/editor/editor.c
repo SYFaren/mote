@@ -1406,9 +1406,11 @@ void ed_free(Editor *e) {
 /* Opens into the current doc; a dirty one gets a new tab, or a
    save / discard question once all MAX_DOCS tabs are taken. A missing
    file opens as a new empty one. */
-mote_bool ed_open_path(Editor *e, const char *path) {
+static mote_bool open_path_encoding(Editor *e, const char *path,
+                                    mote_bool allow_cp1251) {
   Doc *d = D(e);
   Buf nb;
+  BufLoadResult loaded;
   mote_bool exists = MOTE_TRUE;
   if (d->dirty) {
     if (e->ndocs >= MAX_DOCS) {
@@ -1416,16 +1418,25 @@ mote_bool ed_open_path(Editor *e, const char *path) {
       unsaved_ask(e, MODE_OPENASK, "open");
       return MOTE_FALSE;
     }
-    ed_new_doc(e);
-    d = D(e);
   }
   if (!buf_init(&nb, 0)) {
     set_status(e, "out of memory");
     return MOTE_FALSE;
   }
-  if (!buf_load(&nb, path)) {
+  loaded = buf_load_text(&nb, path, allow_cp1251);
+  if (loaded != BUF_LOAD_OK) {
     int err = errno;
     buf_free(&nb);
+    if (loaded == BUF_LOAD_ENCODING) {
+      mote_snprintf(e->encoding_path, sizeof e->encoding_path, "%s", path);
+      e->mode = MODE_ENCODINGASK;
+      set_status(e, "Not UTF-8: Enter = interpret as CP1251, Esc = cancel");
+      return MOTE_FALSE;
+    }
+    if (loaded == BUF_LOAD_BINARY) {
+      set_status(e, "binary/control bytes: convert to UTF-8 text externally");
+      return MOTE_FALSE;
+    }
     if (err != ENOENT) {
       set_status(e, "open failed");
       return MOTE_FALSE;
@@ -1436,12 +1447,35 @@ mote_bool ed_open_path(Editor *e, const char *path) {
     }
     exists = MOTE_FALSE;
   }
+  if (d->dirty) {
+    int old_count = e->ndocs;
+    ed_new_doc(e);
+    d = D(e);
+    if (e->ndocs != old_count + 1) {
+      buf_free(&nb);
+      return MOTE_FALSE;
+    }
+  }
   doc_set_contents(d, &nb, path);
   if (exists) normalize_eol(d);
   vrow_invalidate(e);
   recent_add(e, path);
   set_status(e, exists ? "opened" : "new file");
   return MOTE_TRUE;
+}
+
+mote_bool ed_open_path(Editor *e, const char *path) {
+  return open_path_encoding(e, path, MOTE_FALSE);
+}
+
+static void handle_encoding_ask(Editor *e, const PlatEvent *ev) {
+  char path[sizeof e->encoding_path];
+  if (ev->type != PE_KEY) return;
+  if (ev->key != PK_ENTER && ev->key != PK_ESCAPE) return;
+  mote_snprintf(path, sizeof path, "%s", e->encoding_path);
+  e->encoding_path[0] = 0;
+  leave_mode(e);
+  if (ev->key == PK_ENTER) open_path_encoding(e, path, MOTE_TRUE);
 }
 
 static void doc_status(Editor *e) {
@@ -1964,6 +1998,7 @@ void ed_handle(Editor *e, Plat *p, const PlatEvent *ev) {
     return;
   }
   switch (e->mode) {
+  case MODE_ENCODINGASK: handle_encoding_ask(e, ev); return;
   case MODE_HELP: handle_help(e, ev); return;
   case MODE_RECENT: handle_recent(e, ev); return;
   case MODE_QUICKOPEN: handle_quickopen(e, ev); return;
@@ -2280,7 +2315,8 @@ static void draw_status(Editor *e, Doc *d, Plat *p, const Theme *t,
   plat_fill_rect(p, 0, y, w, h - y, t->status);
   if (pfx[0])
     mote_snprintf(bar, sizeof bar, "%s%s%s", pfx, e->prompt[0] ? " " : "", e->prompt);
-  else if (e->mode == MODE_QUITASK || e->mode == MODE_OPENASK || e->mode == MODE_CLOSEASK)
+  else if (e->mode == MODE_QUITASK || e->mode == MODE_OPENASK ||
+           e->mode == MODE_CLOSEASK || e->mode == MODE_ENCODINGASK)
     mote_snprintf(bar, sizeof bar, "%s", e->status);
   else if (e->find_active && e->find[0])
     mote_snprintf(bar, sizeof bar, "Find: %s%s%s  %s", e->find_regex ? "/" : "",
